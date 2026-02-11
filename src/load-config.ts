@@ -23,6 +23,7 @@ enum ConfigEnvVariables {
   KV_NAMESPACE_ID = "KV_NAMESPACE_ID",
 
   // OPTIONAL
+  CONCURRENCY = "CONCURRENCY",
   WEBHOOK_URL = "WEBHOOK_URL",
   SITEMAP_URL = "SITEMAP_URL",
   SITEMAP_UPDATED_WITHIN = "SITEMAP_UPDATED_WITHIN",
@@ -55,6 +56,8 @@ export interface Configuration {
   cacheTtl: number;
   // User agent
   userAgent: string | undefined;
+  // Concurrency
+  concurrency: number;
 }
 
 export function loadConfig(): Configuration {
@@ -124,6 +127,16 @@ export function loadConfig(): Configuration {
   // User agent is optional, default to default user agent if not set
   const userAgent = process.env[ConfigEnvVariables.USER_AGENT];
 
+  // Concurrency is optional, default to 1 if not set
+  const concurrencyRaw = process.env[ConfigEnvVariables.CONCURRENCY];
+  let concurrency: number = 1;
+  if (concurrencyRaw && !Number.isNaN(parseInt(concurrencyRaw))) {
+    concurrency = parseInt(concurrencyRaw);
+  }
+  if (concurrency < 1) {
+    throw new Error("CONCURRENCY must be at least 1");
+  }
+
   return {
     urlList,
     webhookUrl,
@@ -137,5 +150,6 @@ export function loadConfig(): Configuration {
     kvNamespaceId,
     cacheTtl,
     userAgent,
+    concurrency,
   };
 }

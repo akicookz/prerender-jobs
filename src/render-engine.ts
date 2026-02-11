@@ -7,7 +7,7 @@ const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
-export interface RenderResult {
+export interface SuccessfulRenderResult {
   html: string;
   statusCode: number;
   xRobotsTag?: string | null;
@@ -21,30 +21,37 @@ type ReadinessState = {
 };
 
 export class RenderEngine {
-  private _urls: string[];
-  private _userAgent: string;
+  private readonly _urls: string[];
   private browser: Browser | null = null;
+  private readonly _userAgent: string;
+  private readonly concurrency: number;
 
   static register({
     targetUrls,
     userAgent,
+    concurrency,
   }: {
     targetUrls: string[];
     userAgent: string | undefined;
+    concurrency: number;
   }) {
-    return new RenderEngine(targetUrls, userAgent);
+    return new RenderEngine(targetUrls, concurrency, userAgent);
   }
 
-  private constructor(urls: string[], userAgent?: string) {
+  private constructor(urls: string[], concurrency: number, userAgent?: string) {
     this._urls = urls;
     logger.info(`RenderEngine registered with ${this._urls.length} URLs`);
     this._urls.forEach((url, index) => {
       logger.info(`  - ${index + 1}: ${url}`);
     });
     this._userAgent = userAgent ? userAgent.trim() : DEFAULT_USER_AGENT;
+    this.concurrency = concurrency;
   }
 
-  async renderAll(): Promise<RenderResult[]> {
+  async renderAll(): Promise<{
+    successfulResults: SuccessfulRenderResult[];
+    failedResults: { failReason: string }[];
+  }> {
     try {
       this.browser = await puppeteer.launch({
         executablePath: "/usr/bin/chromium",
@@ -60,16 +67,29 @@ export class RenderEngine {
     }
     try {
       logger.info(`Rendering ${this._urls.length} URLs`);
-      const results: RenderResult[] = [];
-      for (const url of this._urls) {
-        const result = await this.renderPage({ url });
-        results.push(result);
-        logger.info(`URL: ${result.finalUrl}`);
-        logger.info(`Status Code: ${result.statusCode}`);
-        logger.info(`X-Robots-Tag: ${result.xRobotsTag}`);
-        logger.info(`HTML size: ${result.html.length} characters`);
+      const successfulResults: SuccessfulRenderResult[] = [];
+      const failedResults: { failReason: string }[] = [];
+      // batch render urls
+      const batchSize = Math.ceil(this._urls.length / this.concurrency);
+      for (let i = 0; i < this._urls.length; i += batchSize) {
+        const batchUrls = this._urls.slice(i, i + batchSize);
+        const batchResults = await Promise.allSettled(
+          batchUrls.map((url) => this.renderPage({ url })),
+        );
+        batchResults.forEach((result, i) => {
+          if (result.status === "fulfilled") {
+            successfulResults.push(result.value);
+            logger.info(`Successfully rendered ${batchUrls[i]}`);
+          } else {
+            failedResults.push({ failReason: result.reason });
+            logger.error(`Failed to render ${batchUrls[i]}: ${result.reason}`);
+          }
+        });
       }
-      return results;
+      return {
+        successfulResults,
+        failedResults,
+      };
     } catch (e) {
       logger.error(`Failed to render URLs: ${e}`);
       throw e;
@@ -78,7 +98,11 @@ export class RenderEngine {
     }
   }
 
-  private async renderPage({ url }: { url: string }): Promise<RenderResult> {
+  private async renderPage({
+    url,
+  }: {
+    url: string;
+  }): Promise<SuccessfulRenderResult> {
     if (!this.browser) {
       throw new Error("Browser not initialized");
     }
