@@ -4,6 +4,7 @@ import { logger } from "./logger.js";
 import { RenderEngine } from "./render-engine.js";
 import { parseSitemap } from "./sitemap-parser.js";
 import { uniq } from "es-toolkit";
+import { SeoAnalyzer } from "./seo-analyzer/index.js";
 
 async function main() {
   const config = loadConfig();
@@ -25,11 +26,23 @@ async function main() {
   const renderer = RenderEngine.register({
     targetUrls: uniq(urlsToPrerender),
     userAgent: config.userAgent,
+    concurrency: config.concurrency,
   });
-  const results = await renderer.renderAll();
-  logger.info(`Successfully rendered ${results.length} URLs`);
+  const { successfulResults, failedResults } = await renderer.renderAll();
+  logger.info(`Successfully rendered ${successfulResults.length} URLs`);
+  logger.info(`Failed to render ${failedResults.length} URLs`);
 
   // STEP 3 : Extract SEO data
+  const seoAnalysisResults = successfulResults.map((result) => {
+    const analyzer = SeoAnalyzer.register({
+      html: result.html,
+      url: result.finalUrl,
+      statusCode: result.statusCode,
+      xRobotsTag: result.xRobotsTag ?? null,
+    });
+    return analyzer.analyze();
+  });
+  logger.info(`SEO analysis completed for ${seoAnalysisResults.length} URLs`);
 
   // STEP 4 : Sync to Cloudflare R2 and KV
 
