@@ -79,7 +79,9 @@ export class RenderEngine {
         batchResults.forEach((result, i) => {
           if (result.status === "fulfilled") {
             successfulResults.push(result.value);
-            logger.info(`Successfully rendered ${batchUrls[i]}`);
+            logger.info(
+              `Successfully rendered ${batchUrls[i]}, status code: ${result.value.statusCode}`,
+            );
           } else {
             failedResults.push({ failReason: result.reason });
             logger.error(`Failed to render ${batchUrls[i]}: ${result.reason}`);
