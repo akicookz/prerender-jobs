@@ -20,6 +20,9 @@ importers:
       luxon:
         specifier: ^3.7.2
         version: 3.7.2
+      normalize-url:
+        specifier: ^8.1.1
+        version: 8.1.1
       puppeteer-core:
         specifier: ^24.37.2
         version: 24.37.2
@@ -878,6 +881,10 @@ packages:
   normalize-url@6.1.0:
     resolution: {integrity: sha512-DlL+XwOy3NxAQ8xuC0okPgK46iuVNAK01YN7RueYBqqFeGsBjV9XmCAzAdgt+667bCl5kPh9EqKKDwnaPG1I7A==}
     engines: {node: '>=10'}
+
+  normalize-url@8.1.1:
+    resolution: {integrity: sha512-JYc0DPlpGWB40kH5g07gGTrYuMqV653k3uBKY6uITPWds3M0ov3GaWGp9lbE3Bzngx8+XkfzgvASb9vk9JDFXQ==}
+    engines: {node: '>=14.16'}
 
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
@@ -1985,6 +1992,8 @@ snapshots:
   netmask@2.0.2: {}
 
   normalize-url@6.1.0: {}
+
+  normalize-url@8.1.1: {}
 
   once@1.4.0:
     dependencies:

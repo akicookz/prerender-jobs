@@ -5,6 +5,7 @@ import { RenderEngine } from "./render-engine.js";
 import { parseSitemap } from "./sitemap-parser.js";
 import { uniq } from "es-toolkit";
 import { SeoAnalyzer } from "./seo-analyzer/index.js";
+import normalizeUrl from "normalize-url";
 
 async function main() {
   const config = loadConfig();
@@ -24,13 +25,15 @@ async function main() {
 
   // STEP 2 : Pre-render pages
   const renderer = RenderEngine.register({
-    targetUrls: uniq(urlsToPrerender),
+    targetUrls: uniq(urlsToPrerender.map((url) => normalizeUrl(url))),
     userAgent: config.userAgent,
     concurrency: config.concurrency,
   });
   const { successfulResults, failedResults } = await renderer.renderAll();
   logger.info(`Successfully rendered ${successfulResults.length} URLs`);
-  logger.info(`Failed to render ${failedResults.length} URLs`);
+  if (failedResults.length > 0) {
+    logger.info(`Failed to render ${failedResults.length} URLs`);
+  }
 
   // STEP 3 : Extract SEO data
   const seoAnalysisResults = successfulResults.map((result) => {
