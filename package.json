@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc",
     "lint": "eslint src",
-    "start:dev": "pnpm build && NODE_ENV=development node dist/index.js"
+    "start:dev": "pnpm build && NODE_ENV=development node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "",
@@ -23,7 +25,8 @@
     "prettier": "^3.8.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.55.0"
+    "typescript-eslint": "^8.55.0",
+    "vitest": "^4.0.18"
   },
   "dependencies": {
     "dotenv": "^17.2.4",
