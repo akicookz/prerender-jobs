@@ -1,31 +1,38 @@
+import { uniq } from "es-toolkit";
+import normalizeUrl from "normalize-url";
 import { getHostname } from "tldts";
 import { loadConfig } from "./load-config.js";
 import { logger } from "./logger.js";
 import { RenderEngine } from "./render-engine.js";
-import { parseSitemap } from "./sitemap-parser.js";
-import { uniq } from "es-toolkit";
 import { SeoAnalyzer } from "./seo-analyzer/index.js";
-import normalizeUrl from "normalize-url";
+import { SitemapParser } from "./sitemap-parser.js";
 
 async function main() {
   const config = loadConfig();
-  const urlsToPrerender = [...config.urlList];
+  const urlsToRender = [...config.urlList];
   logger.info("Configuration loaded successfully:");
 
   // STEP 1 : Fetch and parse sitemap
-  // sitemap url is optional,
-  // if not provided, we will use the hostname of the first URL in the list to generate the sitemap url
-  const urlsFromSitemap = await parseSitemap({
-    sitemapUrl:
-      config.sitemapUrl ||
-      `https://${getHostname(config.urlList[0]!)}/sitemap.xml`,
-    lastmodFilter: config.sitemapUpdatedWithin,
+  // Explicit sitemap url is optional
+  // All other sitemap urls are generated from the URLs in the URL_LIST
+  const targetSiteMapUrls = config.sitemapUrl ? [config.sitemapUrl] : [];
+  urlsToRender.forEach((url) => {
+    const hostname = getHostname(url);
+    targetSiteMapUrls.push(`https://${hostname}/sitemap.xml`);
   });
-  urlsToPrerender.push(...urlsFromSitemap);
+  for (const sitemapUrl of targetSiteMapUrls) {
+    const sitemapParser = SitemapParser.register({
+      sitemapUrl,
+      lastmodFilter: config.sitemapUpdatedWithin,
+    });
+    const parseResult = await sitemapParser.parseSitemap();
+    urlsToRender.push(...parseResult);
+  }
 
   // STEP 2 : Pre-render pages
+  const normalizedUrls = uniq(urlsToRender.map((url) => normalizeUrl(url)));
   const renderer = RenderEngine.register({
-    targetUrls: uniq(urlsToPrerender.map((url) => normalizeUrl(url))),
+    targetUrls: normalizedUrls,
     userAgent: config.userAgent,
     concurrency: config.concurrency,
   });
@@ -37,13 +44,17 @@ async function main() {
 
   // STEP 3 : Extract SEO data
   const seoAnalysisResults = successfulResults.map((result) => {
-    const analyzer = SeoAnalyzer.register({
-      html: result.html,
-      url: result.finalUrl,
-      statusCode: result.statusCode,
-      xRobotsTag: result.xRobotsTag ?? null,
-    });
-    return analyzer.analyze();
+    try {
+      const analyzer = SeoAnalyzer.register({
+        html: result.html,
+        url: result.finalUrl,
+        statusCode: result.statusCode,
+        xRobotsTag: result.xRobotsTag ?? null,
+      });
+      return analyzer.analyze();
+    } catch {
+      return null;
+    }
   });
   logger.info(`SEO analysis completed for ${seoAnalysisResults.length} URLs`);
 
