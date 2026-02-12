@@ -1,26 +1,39 @@
 import { uniq } from "es-toolkit";
 import normalizeUrl from "normalize-url";
 import { getHostname } from "tldts";
-import { loadConfig } from "./load-config.js";
-import { logger } from "./logger.js";
+import { loadConfig, type Configuration } from "./load-config.js";
 import { RenderEngine } from "./render-engine.js";
 import { SeoAnalyzer } from "./seo-analyzer/index.js";
 import { SitemapParser } from "./sitemap-parser.js";
+import { AppLogger } from "./logger.js";
 
 async function main() {
-  const config = loadConfig();
+  const logger = AppLogger.register({ prefix: "index" });
+
+  let config: Configuration;
+  try {
+    config = loadConfig();
+  } catch (e) {
+    logger.error(
+      `Failed to load configuration: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    throw e;
+  }
   const urlsToRender = [...config.urlList];
+
   logger.info("Configuration loaded successfully:");
 
   // STEP 1 : Fetch and parse sitemap
   // Explicit sitemap url is optional
   // All other sitemap urls are generated from the URLs in the URL_LIST
-  const targetSiteMapUrls = config.sitemapUrl ? [config.sitemapUrl] : [];
+  const targetSiteMapUrls = new Set<string>(
+    config.sitemapUrl ? [config.sitemapUrl] : [],
+  );
   urlsToRender.forEach((url) => {
     const hostname = getHostname(url);
-    targetSiteMapUrls.push(`https://${hostname}/sitemap.xml`);
+    targetSiteMapUrls.add(`https://${hostname}/sitemap.xml`);
   });
-  for (const sitemapUrl of targetSiteMapUrls) {
+  for (const sitemapUrl of Array.from(targetSiteMapUrls)) {
     const sitemapParser = SitemapParser.register({
       sitemapUrl,
       lastmodFilter: config.sitemapUpdatedWithin,
@@ -61,6 +74,7 @@ async function main() {
   // STEP 4 : Sync to Cloudflare R2 and KV
 
   // STEP 5 : Call webhook
+  return 0;
 }
 
 main()

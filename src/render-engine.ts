@@ -1,6 +1,6 @@
 import puppeteer, { Browser, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
-import { logger } from "./logger.js";
+import { AppLogger } from "./logger.js";
 
 const DEFAULT_RENDER_TIMEOUT = 30000; // 30 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
@@ -31,6 +31,7 @@ export class RenderEngine {
   private browser: Browser | null = null;
   private readonly _userAgent: string;
   private readonly concurrency: number;
+  private readonly _logger: AppLogger;
 
   static register({
     targetUrls,
@@ -46,12 +47,13 @@ export class RenderEngine {
 
   private constructor(urls: string[], concurrency: number, userAgent?: string) {
     this._urls = urls;
-    logger.info(`RenderEngine registered with ${this._urls.length} URLs`);
-    this._urls.forEach((url, index) => {
-      logger.info(`  - ${index + 1}: ${url}`);
-    });
     this._userAgent = userAgent ? userAgent.trim() : DEFAULT_USER_AGENT;
     this.concurrency = concurrency;
+    this._logger = AppLogger.register({ prefix: "render-engine" });
+    this._logger.info(`RenderEngine registered with ${this._urls.length} URLs`);
+    this._urls.forEach((url, index) => {
+      this._logger.info(`  - ${index + 1}: ${url}`);
+    });
   }
 
   async renderAll(): Promise<{
@@ -63,9 +65,9 @@ export class RenderEngine {
         executablePath: "/usr/bin/chromium",
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
       });
-      logger.info("Browser launched successfully");
+      this._logger.info("Browser launched successfully");
     } catch (e) {
-      logger.error(
+      this._logger.error(
         `Failed to launch browser: ${e instanceof Error ? e.message : String(e)}`,
       );
       throw e;
@@ -74,28 +76,34 @@ export class RenderEngine {
       throw new Error("Browser not initialized");
     }
     try {
-      logger.info(`Rendering ${this._urls.length} URLs`);
+      this._logger.info(`Rendering ${this._urls.length} URLs`);
       const successfulResults: SuccessfulRenderResult[] = [];
       const failedResults: FailedRenderResult[] = [];
       // batch render urls
       const batchSize = Math.ceil(this._urls.length / this.concurrency);
+      this._logger.info(`Rendering in batches of ${batchSize}`);
       for (let i = 0; i < this._urls.length; i += batchSize) {
         const batchUrls = this._urls.slice(i, i + batchSize);
+        this._logger.info(
+          `Rendering batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(this._urls.length / batchSize)}`,
+        );
         const batchResults = await Promise.allSettled(
           batchUrls.map((url) => this.renderPage({ url })),
         );
         batchResults.forEach((result, i) => {
           if (result.status === "fulfilled") {
             successfulResults.push(result.value);
-            logger.info(
-              `Successfully rendered ${batchUrls[i]}, status code: ${result.value.statusCode}`,
+            this._logger.info(
+              `Rendered ${batchUrls[i]}, status code: ${result.value.statusCode}`,
             );
           } else {
             failedResults.push({
               url: batchUrls[i]!,
               failReason: String(result.reason),
             });
-            logger.error(`Failed to render ${batchUrls[i]}: ${result.reason}`);
+            this._logger.error(
+              `Failed to render ${batchUrls[i]}: ${result.reason}`,
+            );
           }
         });
       }
@@ -104,7 +112,7 @@ export class RenderEngine {
         failedResults,
       };
     } catch (e) {
-      logger.error(
+      this._logger.error(
         `Failed to render URLs: ${e instanceof Error ? e.message : String(e)}`,
       );
       throw e;
@@ -147,7 +155,7 @@ export class RenderEngine {
       const finalUrl = page.url();
       return { url, html, statusCode, xRobotsTag, finalUrl };
     } catch (e) {
-      logger.error(
+      this._logger.error(
         `Failed to render page ${url}: ${e instanceof Error ? e.message : String(e)}`,
       );
       throw e;
@@ -290,7 +298,7 @@ export class RenderEngine {
         });
       }
     } catch (e) {
-      logger.debug("[Prerender] Error setting prerender init script", e);
+      this._logger.debug("[Prerender] Error setting prerender init script", e);
     }
   }
 
@@ -369,13 +377,18 @@ export class RenderEngine {
 
         // Hard timeout reached, take snapshot
         if (elapsed >= HARD_TIMEOUT_MS) {
-          logger.debug("[Prerender] Hard timeout reached, taking snapshot");
+          this._logger.debug(
+            "[Prerender] Hard timeout reached, taking snapshot",
+          );
+          this._logger.debug(
+            "[Prerender] Hard timeout reached, taking snapshot",
+          );
           return settleResolve("hard_timeout");
         }
 
         // App signaled ready via prerenderReady/htmlSnapshot
         if (await this.checkAppSignal({ page })) {
-          logger.debug(
+          this._logger.debug(
             "[Prerender] App signaled ready via prerenderReady/htmlSnapshot",
           );
           return settleResolve("app_signaled");
@@ -405,7 +418,7 @@ export class RenderEngine {
         const domStable = state.domStableSince !== null;
 
         if (networkStable && domStable) {
-          logger.debug(
+          this._logger.debug(
             `[Prerender] Page ready: network idle for ${networkIdleDuration}ms, DOM stable for ${domIdleTime}ms`,
           );
           return settleResolve("network_and_dom_stable");
@@ -415,7 +428,7 @@ export class RenderEngine {
         const DOM_EXTENDED_WAIT_MS = 3000;
         if (elapsed >= MIN_WAIT_MS && networkStable) {
           if (elapsed >= MIN_WAIT_MS + DOM_EXTENDED_WAIT_MS) {
-            logger.debug(
+            this._logger.debug(
               "[Prerender] Network stable, DOM still active but extended wait exceeded",
             );
             return settleResolve("network_stable_dom_timeout");

@@ -4,7 +4,7 @@ import Sitemapper, {
   type SitemapperSiteData,
 } from "sitemapper";
 import { LastmodFilter } from "./load-config.js";
-import { logger } from "./logger.js";
+import { AppLogger } from "./logger.js";
 
 const LASTMOD_FILTER_TO_DAYS = {
   [LastmodFilter.ONE_DAY]: 1,
@@ -14,10 +14,14 @@ const LASTMOD_FILTER_TO_DAYS = {
 };
 
 export class SitemapParser {
+  private readonly _logger: AppLogger;
+
   private constructor(
     private readonly _sitemapUrl: string,
     private readonly _lastmodFilter: LastmodFilter,
-  ) {}
+  ) {
+    this._logger = AppLogger.register({ prefix: "sitemap-parser" });
+  }
 
   static register({
     sitemapUrl,
@@ -30,7 +34,7 @@ export class SitemapParser {
   }
 
   async parseSitemap(): Promise<string[]> {
-    logger.info(
+    this._logger.info(
       `Parsing sitemap: ${this._sitemapUrl} with lastmod filter: ${this._lastmodFilter}`,
     );
     let lastmodToFilterBy: number = 0;
