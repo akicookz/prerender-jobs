@@ -1,6 +1,6 @@
-import { AppLogger } from "../logger.js";
+import { AppLogger } from "../logger";
 import normalizeUrl from "normalize-url";
-import type { CacheConfig, KvRecord } from "./type.js";
+import type { CacheConfig, KvRecord } from "./type";
 import { DateTime } from "luxon";
 import Cloudflare from "cloudflare";
 import {
@@ -8,7 +8,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import type { PageSeoAnalysis } from "../seo-analyzer/type.js";
+import type { PageSeoAnalysis } from "../seo-analyzer/type";
 
 export const INTERNAL_PRERENDER_PARAM = "to_html";
 const CACHE_VERSION = "v1"; // bump to invalidate KV mapping semantics

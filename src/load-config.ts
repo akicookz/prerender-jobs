@@ -1,5 +1,5 @@
-import dotenv from "dotenv";
-import { isMemberOfEnum } from "./util.js";
+import * as dotenv from "dotenv";
+import { isMemberOfEnum } from "./util";
 import validator from "validator";
 import { getHostname } from "tldts";
 

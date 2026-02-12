@@ -1,18 +1,18 @@
 import { uniq } from "es-toolkit";
 import normalizeUrl from "normalize-url";
 import { getDomain, getHostname } from "tldts";
-import { CacheManager } from "./cache-manager/index.js";
-import { loadConfig, type Configuration } from "./load-config.js";
-import { AppLogger } from "./logger.js";
+import { CacheManager } from "./cache-manager/index";
+import { loadConfig, type Configuration } from "./load-config";
+import { AppLogger } from "./logger";
 import {
   RenderEngine,
   type FailedRenderResult,
   type SuccessfulRenderResult,
-} from "./render-engine.js";
-import { SeoAnalyzer } from "./seo-analyzer/index.js";
-import type { PageSeoAnalysis } from "./seo-analyzer/type.js";
-import { SitemapParser } from "./sitemap-parser.js";
-import { extractPathFromUrl } from "./util.js";
+} from "./render-engine";
+import { SeoAnalyzer } from "./seo-analyzer/index";
+import type { PageSeoAnalysis } from "./seo-analyzer/type";
+import { SitemapParser } from "./sitemap-parser";
+import { extractPathFromUrl } from "./util";
 
 const logger = AppLogger.register({ prefix: "index" });
 

@@ -1,15 +1,15 @@
-import winston from "winston";
+import { Logger, createLogger, transports } from "winston";
 
 export class AppLogger {
   private constructor(
-    private readonly _logger: winston.Logger,
+    private readonly _logger: Logger,
     private readonly _prefix: string,
   ) {}
 
   static register({ prefix }: { prefix: string }): AppLogger {
     return new AppLogger(
-      winston.createLogger({
-        transports: [new winston.transports.Console()],
+      createLogger({
+        transports: [new transports.Console()],
       }),
       prefix,
     );

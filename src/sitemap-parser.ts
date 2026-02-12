@@ -3,8 +3,8 @@ import Sitemapper, {
   type SitemapperResponse,
   type SitemapperSiteData,
 } from "sitemapper";
-import { LastmodFilter } from "./load-config.js";
-import { AppLogger } from "./logger.js";
+import { LastmodFilter } from "./load-config";
+import { AppLogger } from "./logger";
 
 const LASTMOD_FILTER_TO_DAYS = {
   [LastmodFilter.ONE_DAY]: 1,

@@ -1,6 +1,6 @@
 import { JSDOM } from "jsdom";
-import { DEFAULT_SEO_CONFIG } from "./config.js";
-import type { MetaTags, OgTags, PageSeoAnalysis } from "./type.js";
+import { DEFAULT_SEO_CONFIG } from "./config";
+import type { MetaTags, OgTags, PageSeoAnalysis } from "./type";
 
 export class SeoAnalyzer {
   private readonly _html: string;

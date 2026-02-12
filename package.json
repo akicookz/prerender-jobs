@@ -2,10 +2,10 @@
   "name": "seotools-ts",
   "version": "1.0.0",
   "description": "",
-  "type": "module",
   "main": "index.js",
   "scripts": {
     "build": "tsc",
+    "clean": "rm -rf dist",
     "lint": "eslint src",
     "start:dev": "pnpm build && NODE_ENV=development node dist/index.js",
     "test": "vitest run",

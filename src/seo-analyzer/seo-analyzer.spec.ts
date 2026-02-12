@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SeoAnalyzer } from "./index.js";
+import { SeoAnalyzer } from "./index";
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -1,7 +1,7 @@
 import puppeteer, { Browser, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
-import { AppLogger } from "./logger.js";
-import { extractPathFromUrl } from "./util.js";
+import { AppLogger } from "./logger";
+import { extractPathFromUrl } from "./util";
 
 const DEFAULT_RENDER_TIMEOUT = 30000; // 30 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { CacheManager } from "./index.js";
-import type { CacheConfig } from "./type.js";
-import type { PageSeoAnalysis } from "../seo-analyzer/type.js";
+import { CacheManager } from "./index";
+import type { CacheConfig } from "./type";
+import type { PageSeoAnalysis } from "../seo-analyzer/type";
 
 // ---------------------------------------------------------------------------
 // Hoisted mock functions – must be created before vi.mock() factories run
@@ -258,14 +258,17 @@ describe("uploadCache() – KV key format", () => {
   });
 
   it("KV key includes the URL path", async () => {
-    await makeManager({ targetUrl: "https://example.com/some/path" }).uploadCache();
+    await makeManager({
+      targetUrl: "https://example.com/some/path",
+    }).uploadCache();
     const [, kvKey] = mockKvUpdate.mock.calls[0] as [string, string];
     expect(kvKey).toContain("/some/path");
   });
 
   it("strips internal prerender params (to_html, cache_invalidate) from KV key", async () => {
     await makeManager({
-      targetUrl: "https://example.com/page?to_html=1&cache_invalidate=1&q=hello",
+      targetUrl:
+        "https://example.com/page?to_html=1&cache_invalidate=1&q=hello",
     }).uploadCache();
     const [, kvKey] = mockKvUpdate.mock.calls[0] as [string, string];
     expect(kvKey).toContain("q=hello");
