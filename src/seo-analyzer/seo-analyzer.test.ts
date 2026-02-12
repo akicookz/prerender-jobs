@@ -45,12 +45,8 @@ function buildHtml({
       ? `<meta property="og:description" content="${ogDescription}">`
       : "",
     ogImage ? `<meta property="og:image" content="${ogImage}">` : "",
-    twitterCard
-      ? `<meta name="twitter:card" content="${twitterCard}">`
-      : "",
-    twitterTitle
-      ? `<meta name="twitter:title" content="${twitterTitle}">`
-      : "",
+    twitterCard ? `<meta name="twitter:card" content="${twitterCard}">` : "",
+    twitterTitle ? `<meta name="twitter:title" content="${twitterTitle}">` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -67,10 +63,20 @@ function wordsBody(n: number): string {
 
 const BASE_URL = "https://example.com/page";
 
-function analyze(overrides: Parameters<typeof buildHtml>[0] & { url?: string; xRobotsTag?: string | null } = {}) {
+function analyze(
+  overrides: Parameters<typeof buildHtml>[0] & {
+    url?: string;
+    xRobotsTag?: string | null;
+  } = {},
+) {
   const { url = BASE_URL, xRobotsTag = null, ...htmlOpts } = overrides;
   const html = buildHtml(htmlOpts);
-  return SeoAnalyzer.register({ html, url, statusCode: 200, xRobotsTag }).analyze();
+  return SeoAnalyzer.register({
+    html,
+    url,
+    statusCode: 200,
+    xRobotsTag,
+  }).analyze();
 }
 
 // ---------------------------------------------------------------------------
@@ -80,19 +86,34 @@ function analyze(overrides: Parameters<typeof buildHtml>[0] & { url?: string; xR
 describe("SeoAnalyzer.register()", () => {
   it("throws when status code is >= 300", () => {
     expect(() =>
-      SeoAnalyzer.register({ html: "<html></html>", url: BASE_URL, statusCode: 301, xRobotsTag: null }),
+      SeoAnalyzer.register({
+        html: "<html></html>",
+        url: BASE_URL,
+        statusCode: 301,
+        xRobotsTag: null,
+      }),
     ).toThrow("Status code is not 200~299");
   });
 
   it("throws when URL is empty", () => {
     expect(() =>
-      SeoAnalyzer.register({ html: "<html></html>", url: "", statusCode: 200, xRobotsTag: null }),
+      SeoAnalyzer.register({
+        html: "<html></html>",
+        url: "",
+        statusCode: 200,
+        xRobotsTag: null,
+      }),
     ).toThrow("URL is required");
   });
 
   it("throws when HTML is empty", () => {
     expect(() =>
-      SeoAnalyzer.register({ html: "", url: BASE_URL, statusCode: 200, xRobotsTag: null }),
+      SeoAnalyzer.register({
+        html: "",
+        url: BASE_URL,
+        statusCode: 200,
+        xRobotsTag: null,
+      }),
     ).toThrow("HTML is required");
   });
 
@@ -108,7 +129,12 @@ describe("SeoAnalyzer.register()", () => {
 
   it("accepts status codes 200-299", () => {
     expect(() =>
-      SeoAnalyzer.register({ html: "<html><body>ok</body></html>", url: BASE_URL, statusCode: 201, xRobotsTag: null }),
+      SeoAnalyzer.register({
+        html: "<html><body>ok</body></html>",
+        url: BASE_URL,
+        statusCode: 201,
+        xRobotsTag: null,
+      }),
     ).not.toThrow();
   });
 });
@@ -127,12 +153,16 @@ describe("analyze() – title", () => {
   });
 
   it("titleStatus is 'ok' when title is 10–60 chars", () => {
-    const result = analyze({ title: "A good SEO title that fits", body: wordsBody(400) });
+    const result = analyze({
+      title: "A good SEO title that fits",
+      body: wordsBody(400),
+    });
     expect(result.titleStatus).toBe("ok");
   });
 
   it("titleStatus is 'too_long' when title > 60 chars", () => {
-    const longTitle = "This title is way too long and exceeds the sixty character limit set";
+    const longTitle =
+      "This title is way too long and exceeds the sixty character limit set";
     expect(longTitle.length).toBeGreaterThan(60);
     const result = analyze({ title: longTitle, body: wordsBody(400) });
     expect(result.titleStatus).toBe("too_long");
@@ -146,12 +176,15 @@ describe("analyze() – meta description", () => {
   });
 
   it("metaDescStatus is 'too_short' when description < 50 chars", () => {
-    const result = analyze({ metaDescription: "Too short desc", body: wordsBody(400) });
+    const result = analyze({
+      metaDescription: "Too short desc",
+      body: wordsBody(400),
+    });
     expect(result.metaDescStatus).toBe("too_short");
   });
 
   it("metaDescStatus is 'ok' when description is 50–160 chars", () => {
-    const desc = "A" .repeat(100);
+    const desc = "A".repeat(100);
     const result = analyze({ metaDescription: desc, body: wordsBody(400) });
     expect(result.metaDescStatus).toBe("ok");
   });
@@ -175,17 +208,26 @@ describe("analyze() – canonical", () => {
   });
 
   it("canonical is 'mismatch' when canonical points to a different path", () => {
-    const result = analyze({ canonical: "https://example.com/other", body: wordsBody(400) });
+    const result = analyze({
+      canonical: "https://example.com/other",
+      body: wordsBody(400),
+    });
     expect(result.canonical).toBe("mismatch");
   });
 
   it("canonical is 'mismatch' when canonical points to a different host", () => {
-    const result = analyze({ canonical: "https://other.com/page", body: wordsBody(400) });
+    const result = analyze({
+      canonical: "https://other.com/page",
+      body: wordsBody(400),
+    });
     expect(result.canonical).toBe("mismatch");
   });
 
   it("canonical is 'mismatch' for an invalid canonical URL", () => {
-    const result = analyze({ canonical: "not-a-valid-url", body: wordsBody(400) });
+    const result = analyze({
+      canonical: "not-a-valid-url",
+      body: wordsBody(400),
+    });
     expect(result.canonical).toBe("mismatch");
   });
 });
@@ -218,12 +260,18 @@ describe("analyze() – indexability", () => {
   });
 
   it("is not indexable with 'noindex' in robots meta", () => {
-    const result = analyze({ robotsMeta: "noindex, nofollow", body: wordsBody(400) });
+    const result = analyze({
+      robotsMeta: "noindex, nofollow",
+      body: wordsBody(400),
+    });
     expect(result.indexable).toBe(false);
   });
 
   it("is indexable with 'index, follow' robots meta", () => {
-    const result = analyze({ robotsMeta: "index, follow", body: wordsBody(400) });
+    const result = analyze({
+      robotsMeta: "index, follow",
+      body: wordsBody(400),
+    });
     expect(result.indexable).toBe(true);
   });
 
@@ -240,7 +288,10 @@ describe("analyze() – indexability", () => {
 
 describe("analyze() – soft 404 detection", () => {
   it("detects soft 404 from '404' in title", () => {
-    const result = analyze({ title: "404 - Page Not Found", body: wordsBody(400) });
+    const result = analyze({
+      title: "404 - Page Not Found",
+      body: wordsBody(400),
+    });
     expect(result.isSoft404).toBe(true);
   });
 
@@ -260,12 +311,17 @@ describe("analyze() – soft 404 detection", () => {
   });
 
   it("detects soft 404 for thin content (< 50 words) with 404 text in body", () => {
-    const result = analyze({ body: "Sorry we could not find the page you were looking for" });
+    const result = analyze({
+      body: "Sorry we could not find the page you were looking for",
+    });
     expect(result.isSoft404).toBe(true);
   });
 
   it("returns isSoft404=false for normal content with a valid title", () => {
-    const result = analyze({ title: "Welcome to Example", body: wordsBody(400) });
+    const result = analyze({
+      title: "Welcome to Example",
+      body: wordsBody(400),
+    });
     expect(result.isSoft404).toBe(false);
   });
 });
@@ -326,7 +382,10 @@ describe("analyze() – Twitter tags", () => {
 
 describe("analyze() – viewport", () => {
   it("hasViewport is true when viewport meta is present", () => {
-    const result = analyze({ viewport: "width=device-width, initial-scale=1", body: wordsBody(400) });
+    const result = analyze({
+      viewport: "width=device-width, initial-scale=1",
+      body: wordsBody(400),
+    });
     expect(result.hasViewport).toBe(true);
     expect(result.viewport).toBe("width=device-width, initial-scale=1");
   });
@@ -344,17 +403,26 @@ describe("analyze() – word count and content status", () => {
   });
 
   it("contentStatus is 'very_thin' when word count < 300", () => {
-    const result = analyze({ title: "Normal Page Title", body: wordsBody(200) });
+    const result = analyze({
+      title: "Normal Page Title",
+      body: wordsBody(200),
+    });
     expect(result.contentStatus).toBe("very_thin");
   });
 
   it("contentStatus is 'thin' when word count is 300–599", () => {
-    const result = analyze({ title: "Normal Page Title", body: wordsBody(400) });
+    const result = analyze({
+      title: "Normal Page Title",
+      body: wordsBody(400),
+    });
     expect(result.contentStatus).toBe("thin");
   });
 
   it("contentStatus is 'ok' when word count >= 600", () => {
-    const result = analyze({ title: "Normal Page Title", body: wordsBody(600) });
+    const result = analyze({
+      title: "Normal Page Title",
+      body: wordsBody(600),
+    });
     expect(result.contentStatus).toBe("ok");
   });
 });
