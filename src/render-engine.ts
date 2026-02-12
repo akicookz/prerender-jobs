@@ -8,10 +8,16 @@ const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
 export interface SuccessfulRenderResult {
+  url: string;
   html: string;
   statusCode: number;
   xRobotsTag?: string | null;
   finalUrl: string;
+}
+
+export interface FailedRenderResult {
+  url: string;
+  failReason: string;
 }
 
 type ReadinessState = {
@@ -50,7 +56,7 @@ export class RenderEngine {
 
   async renderAll(): Promise<{
     successfulResults: SuccessfulRenderResult[];
-    failedResults: { failReason: string }[];
+    failedResults: FailedRenderResult[];
   }> {
     try {
       this.browser = await puppeteer.launch({
@@ -59,7 +65,9 @@ export class RenderEngine {
       });
       logger.info("Browser launched successfully");
     } catch (e) {
-      logger.error(`Failed to launch browser: ${e}`);
+      logger.error(
+        `Failed to launch browser: ${e instanceof Error ? e.message : String(e)}`,
+      );
       throw e;
     }
     if (!this.browser) {
@@ -68,7 +76,7 @@ export class RenderEngine {
     try {
       logger.info(`Rendering ${this._urls.length} URLs`);
       const successfulResults: SuccessfulRenderResult[] = [];
-      const failedResults: { failReason: string }[] = [];
+      const failedResults: FailedRenderResult[] = [];
       // batch render urls
       const batchSize = Math.ceil(this._urls.length / this.concurrency);
       for (let i = 0; i < this._urls.length; i += batchSize) {
@@ -83,7 +91,10 @@ export class RenderEngine {
               `Successfully rendered ${batchUrls[i]}, status code: ${result.value.statusCode}`,
             );
           } else {
-            failedResults.push({ failReason: result.reason });
+            failedResults.push({
+              url: batchUrls[i]!,
+              failReason: String(result.reason),
+            });
             logger.error(`Failed to render ${batchUrls[i]}: ${result.reason}`);
           }
         });
@@ -93,7 +104,9 @@ export class RenderEngine {
         failedResults,
       };
     } catch (e) {
-      logger.error(`Failed to render URLs: ${e}`);
+      logger.error(
+        `Failed to render URLs: ${e instanceof Error ? e.message : String(e)}`,
+      );
       throw e;
     } finally {
       await this.browser?.close();
@@ -132,9 +145,11 @@ export class RenderEngine {
       const statusCode = response.status();
       const xRobotsTag = response.headers()["x-robots-tag"] ?? null;
       const finalUrl = page.url();
-      return { html, statusCode, xRobotsTag, finalUrl };
+      return { url, html, statusCode, xRobotsTag, finalUrl };
     } catch (e) {
-      logger.error(`Failed to render page ${url}: ${e}`);
+      logger.error(
+        `Failed to render page ${url}: ${e instanceof Error ? e.message : String(e)}`,
+      );
       throw e;
     } finally {
       await page.close();
@@ -212,9 +227,9 @@ export class RenderEngine {
     try {
       return await page.evaluate(() => {
         // @ts-expect-error - custom window properties
-        const ready = window.prerenderReady;
+        const ready = window.prerenderReady as boolean;
         // @ts-expect-error - custom window properties
-        const snapshot = window.htmlSnapshot;
+        const snapshot = window.htmlSnapshot as boolean;
         return ready === true || snapshot === true;
       });
     } catch {
@@ -226,7 +241,7 @@ export class RenderEngine {
     try {
       return await page.evaluate(() => {
         // @ts-expect-error - custom window properties
-        return window.__lastDomChange ?? Date.now();
+        return (window.__lastDomChange ?? Date.now()) as number;
       });
     } catch {
       return Date.now();
@@ -336,7 +351,7 @@ export class RenderEngine {
         settled = true;
         resolve(value);
       };
-      const settleReject = (error: unknown) => {
+      const settleReject = (error: Error) => {
         if (settled) {
           return;
         }
@@ -408,11 +423,11 @@ export class RenderEngine {
         }
 
         pendingTimeout = setTimeout(
-          () => tick().catch((e) => settleReject(e)),
+          () => void tick().catch((e: Error) => settleReject(e)),
           POLL_INTERVAL_MS,
         );
       };
-      tick().catch((e) => settleReject(e));
+      tick().catch((e: Error) => settleReject(e));
     }).finally(() => {
       if (pendingTimeout) {
         clearTimeout(pendingTimeout);

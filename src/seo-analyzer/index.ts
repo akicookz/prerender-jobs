@@ -43,8 +43,6 @@ export class SeoAnalyzer {
   }
 
   analyze(): PageSeoAnalysis {
-    const config = DEFAULT_SEO_CONFIG;
-
     const dom = new JSDOM(this._html);
     const document = dom.window.document;
 
@@ -73,61 +71,6 @@ export class SeoAnalyzer {
       wordCount,
     });
 
-    const titleStatus = this.assessTitle({
-      title: metaTags.title,
-      titleLength: metaTags.titleLength ?? 0,
-    });
-
-    // -------------------------------------------------------------------------
-    // Meta description analysis
-    // -------------------------------------------------------------------------
-    const metaDescStatus = this.assessMetaDescription({
-      metaDescription: metaTags.description,
-      metaDescriptionLength: metaTags.descriptionLength ?? 0,
-    });
-
-    // -------------------------------------------------------------------------
-    // Canonical analysis - TODO: Implement
-    // -------------------------------------------------------------------------
-    const canonicalMismatch = false;
-    // if (metaTags.canonical) {
-    //   try {
-    //     const canonicalUrl = new URL(metaTags.canonical);
-    //     const currentUrl = new URL(url);
-    //     // Check if canonical points to a different page
-    //     canonicalMismatch =
-    //       canonicalUrl.hostname !== currentUrl.hostname ||
-    //       canonicalUrl.pathname !== currentUrl.pathname;
-    //   } catch {
-    //     // Invalid URL, treat as mismatch
-    //     canonicalMismatch = true;
-    //   }
-    // }
-
-    // -------------------------------------------------------------------------
-    // H1 analysis
-    // -------------------------------------------------------------------------
-    let h1Status: PageSeoAnalysis["h1Status"];
-    if (h1Tags.length === 0) {
-      h1Status = "missing";
-    } else if (h1Tags.length > 1) {
-      h1Status = "multiple";
-    } else {
-      h1Status = "ok";
-    }
-
-    // -------------------------------------------------------------------------
-    // Content depth analysis
-    // -------------------------------------------------------------------------
-    let contentStatus: PageSeoAnalysis["contentStatus"];
-    if (wordCount < config.thresholds.content_words_min) {
-      contentStatus = "very_thin";
-    } else if (wordCount < config.thresholds.content_words_low) {
-      contentStatus = "thin";
-    } else {
-      contentStatus = "ok";
-    }
-
     // -------------------------------------------------------------------------
     // Build result
     // -------------------------------------------------------------------------
@@ -147,7 +90,6 @@ export class SeoAnalyzer {
       metaDescLength: metaTags.descriptionLength,
       metaDescStatus: this.assessMetaDescription({
         metaDescription: metaTags.description,
-        metaDescriptionLength: metaTags.descriptionLength ?? 0,
       }),
 
       canonical: this.assessCanonical({ canonical: metaTags.canonical }),
@@ -157,7 +99,7 @@ export class SeoAnalyzer {
       h1Status: this.assessH1({ h1Tags }),
 
       wordCount,
-      contentStatus,
+      contentStatus: this.assessContentStatus({ wordCount }),
 
       hasOgTags: this.hasEssentialOgTags(ogTags),
       hasTwitterTags: this.hasEssentialTwitterTags(ogTags),
@@ -464,10 +406,8 @@ export class SeoAnalyzer {
 
   private assessMetaDescription({
     metaDescription,
-    metaDescriptionLength = 0,
   }: {
     metaDescription: string | undefined;
-    metaDescriptionLength: number;
   }): PageSeoAnalysis["metaDescStatus"] {
     if (!metaDescription) {
       return "missing";
@@ -512,6 +452,20 @@ export class SeoAnalyzer {
       return "missing";
     } else if (h1Tags.length > 1) {
       return "multiple";
+    } else {
+      return "ok";
+    }
+  }
+
+  private assessContentStatus({
+    wordCount,
+  }: {
+    wordCount: number;
+  }): PageSeoAnalysis["contentStatus"] {
+    if (wordCount < DEFAULT_SEO_CONFIG.thresholds.content_words_min) {
+      return "very_thin";
+    } else if (wordCount < DEFAULT_SEO_CONFIG.thresholds.content_words_low) {
+      return "thin";
     } else {
       return "ok";
     }
