@@ -45,7 +45,7 @@ async function prepareTargetUrls({
   config: Configuration;
 }): Promise<{ urlsToRender: string[]; sitemapUrl: string }> {
   const sitemapUrl =
-    config.sitemapUrl ??
+    config.sitemapUrl ||
     `https://${getHostname(config.urlList[0]!)}/sitemap.xml`;
   const sitemapParser = SitemapParser.register({
     sitemapUrl,

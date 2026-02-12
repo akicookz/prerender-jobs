@@ -78,12 +78,13 @@ export class RenderEngine {
       const successfulResults: SuccessfulRenderResult[] = [];
       const failedResults: FailedRenderResult[] = [];
       // batch render urls
-      const batchSize = Math.ceil(this._urls.length / this.concurrency);
-      this._logger.info(`Rendering in batches of ${batchSize}`);
-      for (let i = 0; i < this._urls.length; i += batchSize) {
-        const batchUrls = this._urls.slice(i, i + batchSize);
+      const nubmerOfBatches = Math.ceil(this._urls.length / this.concurrency);
+      let currentBatch = 1;
+      this._logger.info(`Rendering ${this.concurrency} URLs at a time`);
+      for (let i = 0; i < this._urls.length; i += this.concurrency) {
+        const batchUrls = this._urls.slice(i, i + this.concurrency);
         this._logger.info(
-          `Rendering batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(this._urls.length / batchSize)}`,
+          `Rendering batch ${currentBatch} of ${nubmerOfBatches}`,
         );
         const batchResults = await Promise.allSettled(
           batchUrls.map((url) => this.renderPage({ url, browser })),
@@ -104,6 +105,7 @@ export class RenderEngine {
             );
           }
         });
+        currentBatch++;
       }
       return {
         successfulResults,
