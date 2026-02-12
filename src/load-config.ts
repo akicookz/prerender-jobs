@@ -1,8 +1,11 @@
 import dotenv from "dotenv";
 import { isMemberOfEnum } from "./util.js";
 import validator from "validator";
+import { getHostname } from "tldts";
 
 const DEFAULT_CACHE_TTL = 604800; // 7 days
+const DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
 export enum LastmodFilter {
   ONE_DAY = "1d",
@@ -29,6 +32,7 @@ enum ConfigEnvVariables {
   SITEMAP_UPDATED_WITHIN = "SITEMAP_UPDATED_WITHIN",
   CACHE_TTL = "CACHE_TTL",
   USER_AGENT = "USER_AGENT",
+  SKIP_CACHE_SYNC = "SKIP_CACHE_SYNC",
 }
 
 export interface Configuration {
@@ -55,9 +59,11 @@ export interface Configuration {
   // TTL in seconds
   cacheTtl: number;
   // User agent
-  userAgent: string | undefined;
+  userAgent: string;
   // Concurrency
   concurrency: number;
+  // Whether to skip cache sync
+  skipCacheSync: boolean;
 }
 
 export function loadConfig(): Configuration {
@@ -76,6 +82,10 @@ export function loadConfig(): Configuration {
   }
   if (urlList.some((url) => !validator.isURL(url))) {
     throw new Error("URL_LIST must be a list of URLs starting with https://");
+  }
+  const urlHostname = getHostname(urlList[0]!);
+  if (urlList.some((url) => getHostname(url) !== urlHostname)) {
+    throw new Error("URL_LIST must be a list of URLs with the same hostname");
   }
 
   // Webhook URL and sitemap configuration are optional
@@ -125,7 +135,8 @@ export function loadConfig(): Configuration {
   }
 
   // User agent is optional, default to default user agent if not set
-  const userAgent = process.env[ConfigEnvVariables.USER_AGENT];
+  const userAgent =
+    process.env[ConfigEnvVariables.USER_AGENT] ?? DEFAULT_USER_AGENT;
 
   // Concurrency is optional, default to 1 if not set
   const concurrencyRaw = process.env[ConfigEnvVariables.CONCURRENCY];
@@ -136,6 +147,11 @@ export function loadConfig(): Configuration {
   if (concurrency < 1) {
     throw new Error("CONCURRENCY must be at least 1");
   }
+
+  // Whether to skip cache sync is optional, default to true if not set
+  const skipCacheSyncRaw =
+    process.env[ConfigEnvVariables.SKIP_CACHE_SYNC]?.toLowerCase();
+  const skipCacheSync = skipCacheSyncRaw ? skipCacheSyncRaw === "true" : true;
 
   return {
     urlList,
@@ -151,5 +167,6 @@ export function loadConfig(): Configuration {
     cacheTtl,
     userAgent,
     concurrency,
+    skipCacheSync,
   };
 }

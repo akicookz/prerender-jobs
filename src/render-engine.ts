@@ -1,11 +1,10 @@
 import puppeteer, { Browser, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { AppLogger } from "./logger.js";
+import { extractPathFromUrl } from "./util.js";
 
 const DEFAULT_RENDER_TIMEOUT = 30000; // 30 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
-const DEFAULT_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
 export interface SuccessfulRenderResult {
   url: string;
@@ -28,7 +27,6 @@ type ReadinessState = {
 
 export class RenderEngine {
   private readonly _urls: string[];
-  private browser: Browser | null = null;
   private readonly _userAgent: string;
   private readonly concurrency: number;
   private readonly _logger: AppLogger;
@@ -39,42 +37,42 @@ export class RenderEngine {
     concurrency,
   }: {
     targetUrls: string[];
-    userAgent: string | undefined;
+    userAgent: string;
     concurrency: number;
   }) {
     return new RenderEngine(targetUrls, concurrency, userAgent);
   }
 
-  private constructor(urls: string[], concurrency: number, userAgent?: string) {
+  private constructor(urls: string[], concurrency: number, userAgent: string) {
     this._urls = urls;
-    this._userAgent = userAgent ? userAgent.trim() : DEFAULT_USER_AGENT;
+    this._userAgent = userAgent.trim();
     this.concurrency = concurrency;
     this._logger = AppLogger.register({ prefix: "render-engine" });
     this._logger.info(`RenderEngine registered with ${this._urls.length} URLs`);
-    this._urls.forEach((url, index) => {
-      this._logger.info(`  - ${index + 1}: ${url}`);
-    });
   }
 
-  async renderAll(): Promise<{
-    successfulResults: SuccessfulRenderResult[];
-    failedResults: FailedRenderResult[];
-  }> {
+  private async launchBrowser(): Promise<Browser> {
     try {
-      this.browser = await puppeteer.launch({
+      const browser = await puppeteer.launch({
         executablePath: "/usr/bin/chromium",
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
       });
       this._logger.info("Browser launched successfully");
+      return browser;
     } catch (e) {
       this._logger.error(
         `Failed to launch browser: ${e instanceof Error ? e.message : String(e)}`,
       );
       throw e;
     }
-    if (!this.browser) {
-      throw new Error("Browser not initialized");
-    }
+  }
+
+  async renderAll(): Promise<{
+    successfulResults: SuccessfulRenderResult[];
+    failedResults: FailedRenderResult[];
+  }> {
+    const browser = await this.launchBrowser();
+
     try {
       this._logger.info(`Rendering ${this._urls.length} URLs`);
       const successfulResults: SuccessfulRenderResult[] = [];
@@ -88,13 +86,13 @@ export class RenderEngine {
           `Rendering batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(this._urls.length / batchSize)}`,
         );
         const batchResults = await Promise.allSettled(
-          batchUrls.map((url) => this.renderPage({ url })),
+          batchUrls.map((url) => this.renderPage({ url, browser })),
         );
         batchResults.forEach((result, i) => {
           if (result.status === "fulfilled") {
             successfulResults.push(result.value);
             this._logger.info(
-              `Rendered ${batchUrls[i]}, status code: ${result.value.statusCode}`,
+              `  - ${extractPathFromUrl(batchUrls[i]!)}, status code: ${result.value.statusCode}`,
             );
           } else {
             failedResults.push({
@@ -102,7 +100,7 @@ export class RenderEngine {
               failReason: String(result.reason),
             });
             this._logger.error(
-              `Failed to render ${batchUrls[i]}: ${result.reason}`,
+              `  - Failed to render ${extractPathFromUrl(batchUrls[i]!)}: ${result.reason}`,
             );
           }
         });
@@ -117,19 +115,18 @@ export class RenderEngine {
       );
       throw e;
     } finally {
-      await this.browser?.close();
+      await browser.close();
     }
   }
 
   private async renderPage({
     url,
+    browser,
   }: {
     url: string;
+    browser: Browser;
   }): Promise<SuccessfulRenderResult> {
-    if (!this.browser) {
-      throw new Error("Browser not initialized");
-    }
-    const page = await this.browser.newPage();
+    const page = await browser.newPage();
 
     try {
       await page.setUserAgent({ userAgent: this._userAgent });

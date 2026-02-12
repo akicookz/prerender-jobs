@@ -57,10 +57,15 @@ export class SitemapParser {
       "sites"
     > & { sites: SitemapperSiteData[] };
     if (errors.length > 0) {
-      throw new Error(
+      this._logger.error(
         `Failed to fetch sitemap: ${errors.map((error) => `${error.type} on ${error.url}`).join(", ")}`,
       );
+      return [];
     }
+    this._logger.info(`Found ${sites.length} URLs in sitemap`);
+    sites.forEach((site, index) => {
+      this._logger.info(`  - ${index + 1}: ${site.loc}`);
+    });
     return sites.map((site) => site.loc);
   }
 }
