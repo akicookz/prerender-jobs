@@ -2,13 +2,14 @@ import { AppLogger } from "../logger";
 import normalizeUrl from "normalize-url";
 import type { CacheConfig, KvRecord } from "./type";
 import { DateTime } from "luxon";
-import Cloudflare from "cloudflare";
+import Cloudflare, { APIError } from "cloudflare";
 import {
   DeleteObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import type { PageSeoAnalysis } from "../seo-analyzer/type";
+import { Response } from "cloudflare/core";
 
 export const INTERNAL_PRERENDER_PARAM = "to_html";
 const CACHE_VERSION = "v1"; // bump to invalidate KV mapping semantics
@@ -204,11 +205,20 @@ export class CacheManager {
     objectKey: string;
   }) {
     const { cfAccountId, kvNamespaceId } = this._cacheConfig;
-    const getKvRecordResponse = await this.cfClient.kv.namespaces.values.get(
-      kvNamespaceId,
-      kvKey,
-      { account_id: cfAccountId },
-    );
+    let getKvRecordResponse: Response;
+    try {
+      getKvRecordResponse = await this.cfClient.kv.namespaces.values.get(
+        kvNamespaceId,
+        kvKey,
+        { account_id: cfAccountId },
+      );
+    } catch (e) {
+      if (e instanceof APIError && e.status === 404) {
+        // No KV record found, skip stale object invalidation
+        return;
+      }
+      throw e;
+    }
     if (getKvRecordResponse.status !== 200) {
       return;
     }
