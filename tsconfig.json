@@ -1,8 +1,9 @@
 {
+  "exclude": ["src/**/*.test.ts", "vitest.config.ts"],
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
-    "module": "nodenext",
+    "module": "commonjs",
     "target": "esnext",
     "lib": ["esnext", "dom"],
     "types": ["node"],
@@ -10,9 +11,7 @@
     "declaration": true,
     "declarationMap": true,
     "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
     "strict": true,
-    "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
