@@ -90,7 +90,7 @@ function makeManager(
 function kvGetResponse(status: number, body: string) {
   return {
     status,
-    blob: async () => ({ text: async () => body }),
+    blob: () => ({ text: () => body }),
   };
 }
 
@@ -166,7 +166,7 @@ describe("uploadCache() – stale R2 invalidation", () => {
     await makeManager().uploadCache();
 
     expect(mockS3Send).toHaveBeenCalledTimes(2); // PutObject + DeleteObject
-    const deleteArg = mockS3Send.mock.calls[1][0] as {
+    const deleteArg = mockS3Send.mock.calls[1]?.[0] as {
       Key: string;
       Bucket: string;
     };
@@ -204,7 +204,11 @@ describe("uploadCache() – KV record content", () => {
       string,
       { value: string; expiration_ttl: number; account_id: string },
     ];
-    const kvRecord = JSON.parse(updateOpts.value);
+    const kvRecord = JSON.parse(updateOpts.value) as {
+      url: string;
+      cacheVersion: string;
+      contentType: string;
+    };
     expect(kvRecord.url).toBe("https://example.com/page");
     expect(kvRecord.cacheVersion).toBe("v1");
     expect(kvRecord.contentType).toBe("text/html; charset=utf-8");
@@ -238,7 +242,9 @@ describe("uploadCache() – KV record content", () => {
       string,
       { value: string },
     ];
-    const kvRecord = JSON.parse(updateOpts.value);
+    const kvRecord = JSON.parse(updateOpts.value) as {
+      userAgent: string;
+    };
     expect(kvRecord.userAgent).toBe("my-custom-bot");
   });
 });
@@ -303,25 +309,25 @@ describe("uploadCache() – R2 object params", () => {
 
   it("uploads to the correct R2 bucket", async () => {
     await makeManager().uploadCache();
-    const putArg = mockS3Send.mock.calls[0][0] as { Bucket: string };
+    const putArg = mockS3Send.mock.calls[0]?.[0] as { Bucket: string };
     expect(putArg.Bucket).toBe(CACHE_CONFIG.r2BucketName);
   });
 
   it("sets ContentType to text/html; charset=utf-8", async () => {
     await makeManager().uploadCache();
-    const putArg = mockS3Send.mock.calls[0][0] as { ContentType: string };
+    const putArg = mockS3Send.mock.calls[0]?.[0] as { ContentType: string };
     expect(putArg.ContentType).toBe("text/html; charset=utf-8");
   });
 
   it("sets CacheControl using cacheTtl from config", async () => {
     await makeManager().uploadCache();
-    const putArg = mockS3Send.mock.calls[0][0] as { CacheControl: string };
+    const putArg = mockS3Send.mock.calls[0]?.[0] as { CacheControl: string };
     expect(putArg.CacheControl).toBe("public, max-age=3600, s-maxage=3600");
   });
 
   it("includes SEO analysis fields in R2 object metadata", async () => {
     await makeManager().uploadCache();
-    const putArg = mockS3Send.mock.calls[0][0] as {
+    const putArg = mockS3Send.mock.calls[0]?.[0] as {
       Metadata: Record<string, string>;
     };
     expect(putArg.Metadata).toMatchObject({
@@ -338,14 +344,14 @@ describe("uploadCache() – R2 object params", () => {
   it("stores the HTML as a Uint8Array body that decodes back to the original", async () => {
     const html = "<html><body>Test content</body></html>";
     await makeManager({ html }).uploadCache();
-    const putArg = mockS3Send.mock.calls[0][0] as { Body: Uint8Array };
+    const putArg = mockS3Send.mock.calls[0]?.[0] as { Body: Uint8Array };
     expect(putArg.Body).toBeInstanceOf(Uint8Array);
     expect(new TextDecoder().decode(putArg.Body)).toBe(html);
   });
 
   it("R2 object key is scoped under the correct host directory", async () => {
     await makeManager({ targetUrl: "https://example.com/page" }).uploadCache();
-    const putArg = mockS3Send.mock.calls[0][0] as { Key: string };
+    const putArg = mockS3Send.mock.calls[0]?.[0] as { Key: string };
     expect(putArg.Key).toMatch(/^v1\/example\.com\//);
   });
 });
