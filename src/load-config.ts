@@ -32,15 +32,17 @@ enum ConfigEnvVariables {
   CACHE_TTL = "CACHE_TTL",
   USER_AGENT = "USER_AGENT",
   SKIP_CACHE_SYNC = "SKIP_CACHE_SYNC",
+  TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN",
+  TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID",
 }
 
 export interface Configuration {
   // CSV of URLs
   urlList: string[];
   // Callback URL on completion
-  webhookUrl: string | undefined;
+  webhookUrl?: string;
   // Explicit sitemap URL
-  sitemapUrl: string | undefined;
+  sitemapUrl?: string;
   // Filter by lastmod
   sitemapUpdatedWithin: LastmodFilter;
   // Cloudflare account ID
@@ -63,6 +65,10 @@ export interface Configuration {
   concurrency: number;
   // Whether to skip cache sync
   skipCacheSync: boolean;
+  // Telegram bot token
+  telegramBotToken?: string;
+  // Telegram chat ID
+  telegramChatId?: string;
 }
 
 export function loadConfig(): Configuration {
@@ -80,8 +86,10 @@ export function loadConfig(): Configuration {
     throw new Error("URL_LIST must be a list of URLs with the same hostname");
   }
 
-  // Webhook URL and sitemap configuration are optional
+  // Webhook URL, Telegram bot token, Telegram chat ID, and sitemap URL are optional
   const webhookUrl = process.env[ConfigEnvVariables.WEBHOOK_URL];
+  const telegramBotToken = process.env[ConfigEnvVariables.TELEGRAM_BOT_TOKEN];
+  const telegramChatId = process.env[ConfigEnvVariables.TELEGRAM_CHAT_ID];
   const sitemapUrl = process.env[ConfigEnvVariables.SITEMAP_URL];
 
   const sitemapUpdatedWithin =
@@ -160,5 +168,7 @@ export function loadConfig(): Configuration {
     userAgent,
     concurrency,
     skipCacheSync,
+    telegramBotToken,
+    telegramChatId,
   };
 }

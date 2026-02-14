@@ -10,6 +10,7 @@ import { SeoAnalyzer } from "./seo-analyzer/index";
 import type { PageSeoAnalysis } from "./seo-analyzer/type";
 import { SitemapParser } from "./sitemap-parser";
 import { extractPathFromUrl } from "./util";
+import * as TelegramBot from "node-telegram-bot-api";
 
 const logger = AppLogger.register({ prefix: "index" });
 
@@ -85,6 +86,7 @@ async function reportResult({
 }): Promise<void> {
   const resultBody = {
     run_id: startedAt,
+    google_cloud_execution_id: process.env.GOOGLE_CLOUD_EXECUTION_ID ?? "local",
     domain,
     urls_rendered: countRendered,
     urls_synced_r2: countR2Synced,
@@ -104,19 +106,44 @@ async function reportResult({
       },
     },
   };
+  if (config.telegramBotToken && config.telegramChatId) {
+    logger.info(`Sending result to Telegram chat: ${config.telegramChatId}`);
+    const telegramBot = new TelegramBot(config.telegramBotToken);
+    try {
+      await telegramBot.sendMessage(
+        config.telegramChatId,
+        `\`\`\`json\n${JSON.stringify(resultBody, null, 2)}\n\`\`\``,
+        {
+          parse_mode: "MarkdownV2",
+        },
+      );
+      logger.info(`Result sent to Telegram successfully`);
+    } catch (e) {
+      logger.error(
+        `Failed to send result to Telegram: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   if (config.webhookUrl) {
     logger.info(`Calling webhook endpoint: ${config.webhookUrl}`);
-    const response = await fetch(config.webhookUrl, {
-      method: "POST",
-      body: JSON.stringify(resultBody),
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-    if (!response.ok) {
-      logger.error(`Failed to call webhook: ${response.statusText}`);
+    try {
+      const response = await fetch(config.webhookUrl, {
+        method: "POST",
+        body: JSON.stringify(resultBody, null, 2),
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+      if (!response.ok) {
+        logger.error(`Failed to call webhook: ${response.statusText}`);
+      }
+      logger.info(`Webhook called successfully`);
+    } catch (e) {
+      logger.error(
+        `Failed to call webhook: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
-    logger.info(`Webhook called successfully`);
   }
 }
 
