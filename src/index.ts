@@ -1,14 +1,11 @@
 import { uniq } from "es-toolkit";
 import normalizeUrl from "normalize-url";
+import puppeteer, { Browser } from "puppeteer-core";
 import { getDomain, getHostname } from "tldts";
 import { CacheManager } from "./cache-manager/index";
 import { loadConfig, type Configuration } from "./load-config";
-import { AppLogger } from "./logger";
-import {
-  RenderEngine,
-  type FailedRenderResult,
-  type SuccessfulRenderResult,
-} from "./render-engine";
+import { AppLogger, INDENT } from "./logger";
+import { RenderEngine, type RenderResult } from "./render-engine";
 import { SeoAnalyzer } from "./seo-analyzer/index";
 import type { PageSeoAnalysis } from "./seo-analyzer/type";
 import { SitemapParser } from "./sitemap-parser";
@@ -16,15 +13,13 @@ import { extractPathFromUrl } from "./util";
 
 const logger = AppLogger.register({ prefix: "index" });
 
-export interface AnalysisResult {
-  renderResult: SuccessfulRenderResult;
-  seoAnalysisResult: PageSeoAnalysis | null;
+interface PipelineResult {
+  url: string;
+  isRendered: boolean;
+  isAnalyzed: boolean;
+  isCachedToR2: boolean;
+  isCachedToKV: boolean;
 }
-
-export type CacheSyncResult = AnalysisResult & {
-  kvSynced: boolean;
-  r2Synced: boolean;
-};
 
 function getConfig(): Configuration {
   try {
@@ -58,185 +53,235 @@ async function prepareTargetUrls({
   logger.info(`Prepared ${urlsToRender.length} URLs to render`);
   logger.info(`Base URL: ${getHostname(urlsToRender[0]!)}`);
   urlsToRender.forEach((url, index) => {
-    logger.info(`  - ${index + 1}: ${extractPathFromUrl(url)}`);
+    logger.info(`${INDENT}${index + 1}: ${extractPathFromUrl(url)}`);
   });
   return { urlsToRender, sitemapUrl };
 }
 
-async function renderPages({
+async function reportResult({
   config,
-  urlsToRender,
-}: {
-  config: Configuration;
-  urlsToRender: string[];
-}): Promise<{
-  successfulResults: SuccessfulRenderResult[];
-  failedResults: FailedRenderResult[];
-}> {
-  const renderer = RenderEngine.register({
-    targetUrls: urlsToRender,
-    userAgent: config.userAgent,
-    concurrency: config.concurrency,
-  });
-  const { successfulResults, failedResults } = await renderer.renderAll();
-  logger.info(`Successfully rendered ${successfulResults.length} URLs`);
-  if (failedResults.length > 0) {
-    logger.info(`Failed to render ${failedResults.length} URLs`);
-  }
-  return { successfulResults, failedResults };
-}
-
-function analyzeSeo({
-  successfulResults,
-}: {
-  successfulResults: SuccessfulRenderResult[];
-}): {
-  renderResult: SuccessfulRenderResult;
-  seoAnalysisResult: PageSeoAnalysis | null;
-}[] {
-  logger.info(`Extracting SEO data for ${successfulResults.length} URLs`);
-  const seoAnalysisResults = successfulResults.map((result) => {
-    try {
-      const analyzer = SeoAnalyzer.register({
-        html: result.html,
-        url: result.finalUrl,
-        statusCode: result.statusCode,
-        xRobotsTag: result.xRobotsTag ?? null,
-      });
-      return analyzer.analyze();
-    } catch {
-      return null;
-    }
-  });
-  logger.info(`SEO analysis completed for ${seoAnalysisResults.length} URLs`);
-  return successfulResults.map((result, index) => ({
-    renderResult: result,
-    seoAnalysisResult: seoAnalysisResults[index] ?? null,
-  }));
-}
-
-async function syncCache({
-  config,
-  seoAnalysisResults,
-}: {
-  config: Configuration;
-  seoAnalysisResults: AnalysisResult[];
-}): Promise<CacheSyncResult[]> {
-  const cacheSyncResults: CacheSyncResult[] = [];
-  for (const result of seoAnalysisResults) {
-    if (!result.seoAnalysisResult) {
-      logger.warn(
-        `No SEO analysis result for ${result.renderResult.finalUrl}, skipping cache sync`,
-      );
-      cacheSyncResults.push({
-        renderResult: result.renderResult,
-        seoAnalysisResult: null,
-        kvSynced: false,
-        r2Synced: false,
-      });
-      continue;
-    }
-    const cacheManager = CacheManager.register({
-      targetUrl: result.renderResult.finalUrl,
-      html: result.renderResult.html,
-      seoAnalysis: result.seoAnalysisResult,
-      userAgent: config.userAgent,
-      cacheConfig: {
-        cacheTtl: config.cacheTtl,
-        cfAccountId: config.cfAccountId,
-        cfApiToken: config.cfApiToken,
-        r2AccessKeyId: config.r2AccessKeyId,
-        r2SecretAccessKey: config.r2SecretAccessKey,
-        r2BucketName: config.r2BucketName,
-        kvNamespaceId: config.kvNamespaceId,
-      },
-    });
-    const { kvSynced, r2Synced } = await cacheManager.uploadCache();
-    cacheSyncResults.push({
-      renderResult: result.renderResult,
-      seoAnalysisResult: result.seoAnalysisResult,
-      kvSynced,
-      r2Synced,
-    });
-  }
-  logger.info(`Cache sync completed for ${cacheSyncResults.length} URLs:`);
-  logger.info(
-    `  - ${cacheSyncResults.filter((result) => result.kvSynced).length} URLs synced to KV`,
-  );
-  logger.info(
-    `  - ${cacheSyncResults.filter((result) => result.r2Synced).length} URLs synced to R2`,
-  );
-  const failedToSync = cacheSyncResults.filter(
-    (result) => !result.r2Synced || !result.kvSynced,
-  );
-  if (failedToSync.length > 0) {
-    logger.info(
-      `  - Failed to sync ${failedToSync.length} URLs to either KV or R2`,
-    );
-    failedToSync.forEach((result) => {
-      logger.info(`    - ${result.renderResult.finalUrl}`);
-    });
-  }
-  return cacheSyncResults;
-}
-
-async function callWebhook({
-  cacheSyncResults,
   domain,
-  webhookUrl,
+  countRendered,
+  countKvSynced,
+  countR2Synced,
   sitemapUrl,
   sitemapFilter,
   startedAt,
   completedAt,
-  failedToRender,
+  failedToRenderUrls,
+  failedToSyncUrls,
 }: {
-  cacheSyncResults: CacheSyncResult[];
+  config: Configuration;
   domain: string;
-  webhookUrl: string;
+  countRendered: number;
+  countKvSynced: number;
+  countR2Synced: number;
   sitemapUrl: string;
   sitemapFilter: string;
   startedAt: number;
   completedAt: number;
-  failedToRender: FailedRenderResult[];
+  failedToRenderUrls: string[];
+  failedToSyncUrls: string[];
 }): Promise<void> {
-  logger.info("Calling webhook");
-
-  const webhookBody = {
+  const resultBody = {
     run_id: startedAt,
     domain,
-    urls_rendered: cacheSyncResults.length,
-    urls_synced_r2: cacheSyncResults.filter((result) => result.r2Synced).length,
-    urls_synced_kv: cacheSyncResults.filter((result) => result.kvSynced).length,
+    urls_rendered: countRendered,
+    urls_synced_r2: countR2Synced,
+    urls_synced_kv: countKvSynced,
     sitemap_url: sitemapUrl,
     sitemap_filter: sitemapFilter,
     started_at: startedAt,
     finished_at: completedAt,
     failed: {
       failed_to_render: {
-        urls: failedToRender.map((result) => result.url),
-        count: failedToRender.length,
+        urls: failedToRenderUrls,
+        count: failedToRenderUrls.length,
       },
       failed_to_sync: {
-        urls: cacheSyncResults
-          .filter((result) => !result.r2Synced || !result.kvSynced)
-          .map((result) => result.renderResult.finalUrl),
-        count: cacheSyncResults.filter(
-          (result) => !result.r2Synced || !result.kvSynced,
-        ).length,
+        urls: failedToSyncUrls,
+        count: failedToSyncUrls.length,
       },
     },
   };
-  const response = await fetch(webhookUrl, {
-    method: "POST",
-    body: JSON.stringify(webhookBody),
-    headers: {
-      "Content-Type": "application/json",
+  if (config.webhookUrl) {
+    logger.info(`Calling webhook endpoint: ${config.webhookUrl}`);
+    const response = await fetch(config.webhookUrl, {
+      method: "POST",
+      body: JSON.stringify(resultBody),
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+    if (!response.ok) {
+      logger.error(`Failed to call webhook: ${response.statusText}`);
+    }
+    logger.info(`Webhook called successfully`);
+  }
+}
+
+async function launchBrowser(): Promise<Browser> {
+  try {
+    const browser = await puppeteer.launch({
+      executablePath: "/usr/bin/chromium",
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+    logger.info("Browser launched successfully");
+    return browser;
+  } catch (e) {
+    logger.error(
+      `Failed to launch browser: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    throw e;
+  }
+}
+
+async function runPipeline({
+  pipelineNumber,
+  urlToRender,
+  config,
+  browser,
+}: {
+  pipelineNumber: number;
+  urlToRender: string;
+  config: Configuration;
+  browser: Browser;
+}): Promise<PipelineResult> {
+  const path = extractPathFromUrl(urlToRender);
+  const result: PipelineResult = {
+    url: urlToRender,
+    isRendered: false,
+    isAnalyzed: false,
+    isCachedToR2: false,
+    isCachedToKV: false,
+  };
+  logger.info(`[${pipelineNumber}] Processing ${urlToRender}`);
+  const renderer = RenderEngine.register({
+    targetUrl: urlToRender,
+    browser,
+    userAgent: config.userAgent,
+  });
+
+  let renderResult: RenderResult;
+  try {
+    renderResult = await renderer.renderPage();
+    result.isRendered = true;
+    logger.info(`${INDENT}${INDENT}↳ ${path} - rendering completed`);
+  } catch (e) {
+    logger.error(
+      `${INDENT}${INDENT}↳ ${path} - rendering failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return result;
+  }
+
+  let seoAnalysisResult: PageSeoAnalysis | null = null;
+  try {
+    const analyzer = SeoAnalyzer.register({
+      html: renderResult.html,
+      url: renderResult.finalUrl,
+      statusCode: renderResult.statusCode,
+      xRobotsTag: renderResult.xRobotsTag ?? null,
+    });
+    seoAnalysisResult = analyzer.analyze();
+    result.isAnalyzed = true;
+    logger.info(`${INDENT}${INDENT}↳ ${path} - SEO analysis completed`);
+  } catch (e) {
+    logger.error(
+      `${INDENT}${INDENT}↳ ${path} - SEO analysis failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return result;
+  }
+
+  // Skip caching if SKIP_CACHE_SYNC is true
+  if (config.skipCacheSync) {
+    return result;
+  }
+
+  const cacheManager = CacheManager.register({
+    targetUrl: renderResult.finalUrl,
+    html: renderResult.html,
+    seoAnalysis: seoAnalysisResult,
+    userAgent: config.userAgent,
+    cacheConfig: {
+      cacheTtl: config.cacheTtl,
+      cfAccountId: config.cfAccountId,
+      cfApiToken: config.cfApiToken,
+      r2AccessKeyId: config.r2AccessKeyId,
+      r2SecretAccessKey: config.r2SecretAccessKey,
+      r2BucketName: config.r2BucketName,
+      kvNamespaceId: config.kvNamespaceId,
     },
   });
-  if (!response.ok) {
-    logger.error(`Failed to call webhook: ${response.statusText}`);
+  const { kvSynced, r2Synced } = await cacheManager.uploadCache();
+  result.isCachedToR2 = r2Synced;
+  result.isCachedToKV = kvSynced;
+  if (!kvSynced || !r2Synced) {
+    logger.error(
+      `${INDENT}${INDENT}↳ ${path} - caching failed: kvSynced: ${kvSynced}, r2Synced: ${r2Synced}`,
+    );
+    return result;
   }
-  logger.info(`Webhook called successfully`);
+  logger.info(`${INDENT}${INDENT}↳ ${path} - caching completed`);
+  return result;
+}
+
+async function runPipelineBatches({
+  concurrency,
+  browser,
+  urlsToRender,
+  config,
+}: {
+  concurrency: number;
+  browser: Browser;
+  config: Configuration;
+  urlsToRender: string[];
+}): Promise<{
+  countRendered: number;
+  countKvSynced: number;
+  countR2Synced: number;
+  failedToRenderUrls: string[];
+  failedToSyncUrls: string[];
+}> {
+  const pipelineResults: PipelineResult[] = [];
+  const totalNumberOfBatches = Math.ceil(urlsToRender.length / concurrency);
+  logger.info(`Running pipeline batches with concurrency: ${concurrency}`);
+  logger.info(`${INDENT}↳ ${totalNumberOfBatches} batches`);
+  if (config.skipCacheSync) {
+    logger.info(`${INDENT}↳ SKIPPING CACHING: SKIP_CACHE_SYNC is true`);
+  }
+  let processedCount = 0;
+  for (let i = 0; i < urlsToRender.length; i += concurrency) {
+    logger.info(
+      `Start batch ${i / concurrency + 1} of ${totalNumberOfBatches}`,
+    );
+    const batchUrls = urlsToRender.slice(i, i + concurrency);
+    const batchResults = await Promise.all(
+      batchUrls.map((url, index) =>
+        runPipeline({
+          pipelineNumber: processedCount + index + 1,
+          urlToRender: url,
+          config,
+          browser,
+        }),
+      ),
+    );
+    pipelineResults.push(...batchResults);
+    processedCount += batchUrls.length;
+  }
+
+  return {
+    countRendered: pipelineResults.filter((result) => result.isRendered).length,
+    countKvSynced: pipelineResults.filter((result) => result.isCachedToKV)
+      .length,
+    countR2Synced: pipelineResults.filter((result) => result.isCachedToR2)
+      .length,
+    failedToRenderUrls: pipelineResults
+      .filter((result) => !result.isRendered)
+      .map((result) => result.url),
+    failedToSyncUrls: pipelineResults
+      .filter((result) => !result.isCachedToR2 || !result.isCachedToKV)
+      .map((result) => result.url),
+  };
 }
 
 async function main(): Promise<void> {
@@ -246,40 +291,39 @@ async function main(): Promise<void> {
   // STEP 1 : Prepare target URLs
   const { urlsToRender, sitemapUrl } = await prepareTargetUrls({ config });
 
-  // STEP 2 : Pre-render pages
-  const { successfulResults, failedResults } = await renderPages({
-    config,
+  // STEP 2 : Launch browser
+  const browser = await launchBrowser();
+
+  // STEP 3 : Run the pipeline batches
+  const {
+    countRendered,
+    countKvSynced,
+    countR2Synced,
+    failedToRenderUrls,
+    failedToSyncUrls,
+  } = await runPipelineBatches({
+    concurrency: config.concurrency,
+    browser,
     urlsToRender,
+    config,
   });
-
-  // STEP 3 : Extract SEO data
-  const seoAnalysisResults = analyzeSeo({ successfulResults });
-
-  // STEP 4 : Sync to Cloudflare R2 and KV
-  let cacheSyncResults: CacheSyncResult[] = [];
-  if (!config.skipCacheSync) {
-    cacheSyncResults = await syncCache({ config, seoAnalysisResults });
-  } else {
-    logger.info("Skipping cache sync");
-  }
 
   const completedAt = Date.now();
 
-  // STEP 5 : Call webhook
-  if (!config.webhookUrl) {
-    logger.info("No webhook URL configured, skipping webhook");
-    return;
-  }
-  const domain = getDomain(cacheSyncResults[0]!.renderResult.finalUrl)!;
-  await callWebhook({
-    cacheSyncResults,
-    domain,
-    webhookUrl: config.webhookUrl,
+  // STEP 5 : Report result
+  const domain = getDomain(urlsToRender[0]!);
+  await reportResult({
+    config,
+    countRendered,
+    countKvSynced,
+    countR2Synced,
+    failedToRenderUrls,
+    failedToSyncUrls,
+    domain: domain!,
     sitemapUrl,
     sitemapFilter: config.sitemapUpdatedWithin,
     startedAt,
     completedAt,
-    failedToRender: failedResults,
   });
 }
 
