@@ -12,8 +12,6 @@ import { SitemapParser } from "./sitemap-parser";
 import { extractPathFromUrl } from "./util";
 import * as TelegramBot from "node-telegram-bot-api";
 
-const logger = AppLogger.register({ prefix: "index" });
-
 interface PipelineResult {
   url: string;
   isRendered: boolean;
@@ -21,6 +19,9 @@ interface PipelineResult {
   isCachedToR2: boolean;
   isCachedToKV: boolean;
 }
+
+const logger = AppLogger.register({ prefix: "index" });
+const config = getConfig();
 
 function getConfig(): Configuration {
   try {
@@ -86,7 +87,7 @@ async function reportResult({
 }): Promise<void> {
   const resultBody = {
     run_id: startedAt,
-    google_cloud_execution_id: process.env.GOOGLE_CLOUD_EXECUTION_ID ?? "local",
+    google_cloud_execution_id: process.env.CLOUD_RUN_EXECUTION ?? "local",
     domain,
     urls_rendered: countRendered,
     urls_synced_r2: countR2Synced,
@@ -311,9 +312,8 @@ async function runPipelineBatches({
   };
 }
 
-async function main(): Promise<void> {
+async function main({ config }: { config: Configuration }): Promise<void> {
   const startedAt = Date.now();
-  const config = getConfig();
 
   // STEP 1 : Prepare target URLs
   const { urlsToRender, sitemapUrl } = await prepareTargetUrls({ config });
@@ -354,11 +354,39 @@ async function main(): Promise<void> {
   });
 }
 
-main()
+main({ config })
   .then(() => {
     process.exit(0);
   })
-  .catch((error) => {
-    console.error(error);
+  .catch(async (error) => {
+    logger.error(
+      `Failed to run main: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    if (config.telegramBotToken && config.telegramChatId) {
+      const telegramBot = new TelegramBot(config.telegramBotToken);
+      try {
+        await telegramBot.sendMessage(
+          config.telegramChatId,
+          `Failed to execute the job:\n\`\`\`json\n${JSON.stringify(
+            {
+              google_cloud_execution_id:
+                process.env.CLOUD_RUN_EXECUTION ?? "local",
+              failReason:
+                error instanceof Error ? error.message : String(error),
+            },
+            null,
+            2,
+          )}\n\`\`\``,
+          {
+            parse_mode: "MarkdownV2",
+          },
+        );
+        logger.info(`Error sent to Telegram successfully`);
+      } catch (e) {
+        logger.error(
+          `Failed to send error to Telegram: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
     process.exit(1);
   });
