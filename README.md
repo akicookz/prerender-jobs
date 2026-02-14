@@ -16,12 +16,12 @@ The pipeline runs in five steps:
 
 After the initial page load, the engine polls until one of the following conditions is met (in priority order):
 
-| Signal | Trigger |
-|---|---|
-| App signal | `window.prerenderReady === true` or `window.htmlSnapshot === true` |
-| Network + DOM stable | No pending first-party requests for 500 ms **and** no DOM mutations for 300 ms |
+| Signal                    | Trigger                                                                              |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| App signal                | `window.prerenderReady === true` or `window.htmlSnapshot === true`                   |
+| Network + DOM stable      | No pending first-party requests for 500 ms **and** no DOM mutations for 300 ms       |
 | Network stable (extended) | Network idle for 500 ms, DOM still mutating — snapshot taken after an additional 3 s |
-| Hard timeout | 15 s elapsed since navigation |
+| Hard timeout              | 15 s elapsed since navigation                                                        |
 
 Third-party domains (analytics, fonts, ad networks) are excluded from network idle tracking.
 
@@ -37,22 +37,22 @@ Copy the sample file and fill in your values:
 cp .env.sample .env.local
 ```
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `URL_LIST` | yes | — | Comma-separated list of URLs to prerender (all must share the same hostname) |
-| `CF_ACCOUNT_ID` | yes | — | Cloudflare account ID |
-| `CF_API_TOKEN` | yes | — | Cloudflare API token (KV write access) |
-| `R2_ACCESS_KEY_ID` | yes | — | R2 S3-compatible access key |
-| `R2_SECRET_ACCESS_KEY` | yes | — | R2 S3-compatible secret key |
-| `R2_BUCKET_NAME` | yes | — | Target R2 bucket name |
-| `KV_NAMESPACE_ID` | yes | — | KV namespace ID for the cache index |
-| `SITEMAP_URL` | no | `<hostname>/sitemap.xml` | Explicit sitemap URL |
-| `SITEMAP_UPDATED_WITHIN` | no | `all` | Filter sitemap URLs by lastmod: `1d`, `3d`, `7d`, `30d`, `all` |
-| `CACHE_TTL` | no | `604800` (7 days) | Cache TTL in seconds |
-| `USER_AGENT` | no | Chrome 124 UA string | Custom user agent string |
-| `CONCURRENCY` | no | `1` | Number of pages to render in parallel |
-| `SKIP_CACHE_SYNC` | no | `true` | Set to `false` to upload results to R2 and KV |
-| `WEBHOOK_URL` | no | — | Callback URL called on completion |
+| Variable                 | Required | Default                  | Description                                                                  |
+| ------------------------ | -------- | ------------------------ | ---------------------------------------------------------------------------- |
+| `URL_LIST`               | yes      | —                        | Comma-separated list of URLs to prerender (all must share the same hostname) |
+| `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                        |
+| `CF_API_TOKEN`           | yes      | —                        | Cloudflare API token (KV write access)                                       |
+| `R2_ACCESS_KEY_ID`       | yes      | —                        | R2 S3-compatible access key                                                  |
+| `R2_SECRET_ACCESS_KEY`   | yes      | —                        | R2 S3-compatible secret key                                                  |
+| `R2_BUCKET_NAME`         | yes      | —                        | Target R2 bucket name                                                        |
+| `KV_NAMESPACE_ID`        | yes      | —                        | KV namespace ID for the cache index                                          |
+| `SITEMAP_URL`            | no       | `<hostname>/sitemap.xml` | Explicit sitemap URL                                                         |
+| `SITEMAP_UPDATED_WITHIN` | no       | `all`                    | Filter sitemap URLs by lastmod: `1d`, `3d`, `7d`, `30d`, `all`               |
+| `CACHE_TTL`              | no       | `604800` (7 days)        | Cache TTL in seconds                                                         |
+| `USER_AGENT`             | no       | Chrome 124 UA string     | Custom user agent string                                                     |
+| `CONCURRENCY`            | no       | `1`                      | Number of pages to render in parallel                                        |
+| `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2 and KV                                |
+| `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                            |
 
 ### 2. Run via Docker (recommended)
 
@@ -73,8 +73,6 @@ pnpm install
 pnpm start:dev
 ```
 
-`start:dev` sets `NODE_ENV=development`, which makes the app load `.env.local` via dotenv automatically.
-
 ---
 
 ## Webhook payload
@@ -83,7 +81,7 @@ When `WEBHOOK_URL` is set, a `POST` request is sent on completion with the follo
 
 ```jsonc
 {
-  "run_id": 1234567890,       // epoch ms when the job started
+  "run_id": 1234567890, // epoch ms when the job started
   "domain": "example.com",
   "urls_rendered": 42,
   "urls_synced_r2": 42,
@@ -94,7 +92,7 @@ When `WEBHOOK_URL` is set, a `POST` request is sent on completion with the follo
   "finished_at": 1234567899,
   "failed": {
     "failed_to_render": { "urls": [], "count": 0 },
-    "failed_to_sync":   { "urls": [], "count": 0 }
-  }
+    "failed_to_sync": { "urls": [], "count": 0 },
+  },
 }
 ```

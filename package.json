@@ -7,7 +7,7 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "lint": "eslint src",
-    "start:dev": "pnpm build && NODE_ENV=development node dist/index.js",
+    "start:dev": "bash run-local.sh",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -31,7 +31,6 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.988.0",
     "cloudflare": "^5.2.0",
-    "dotenv": "^17.2.4",
     "es-toolkit": "^1.44.0",
     "jsdom": "^28.0.0",
     "luxon": "^3.7.2",

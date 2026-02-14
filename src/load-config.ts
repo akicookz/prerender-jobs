@@ -1,4 +1,3 @@
-import * as dotenv from "dotenv";
 import { isMemberOfEnum } from "./util";
 import validator from "validator";
 import { getHostname } from "tldts";
@@ -67,13 +66,6 @@ export interface Configuration {
 }
 
 export function loadConfig(): Configuration {
-  const isDevelopment = process.env.NODE_ENV === "development";
-  if (isDevelopment) {
-    dotenv.config({
-      path: ".env.local",
-    });
-  }
-
   // URL list is required
   const urlListRaw = process.env[ConfigEnvVariables.URL_LIST] ?? "";
   const urlList = urlListRaw.split(",").map((item) => item.trim());
