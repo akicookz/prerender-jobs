@@ -18,4 +18,4 @@ spec:
                   cpu: 2000m
                   memory: 2Gi
           maxRetries: 2
-          timeoutSeconds: "600"
+          timeoutSeconds: "900"
