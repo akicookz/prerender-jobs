@@ -54,23 +54,57 @@ cp .env.sample .env.local
 | `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2 and KV                                |
 | `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                            |
 
-### 2. Run via Docker (recommended)
+### 2. Run via Docker
 
 Docker handles Chromium installation automatically.
 
 ```bash
-bash run-local.sh
+pnpm exec:local
+# or: bash execute-on-local.sh
 ```
 
 This builds the image and runs it with `.env.local` injected as environment variables.
 
-### 3. Run directly with Node
+---
 
-Requires Chromium installed at `/usr/bin/chromium` on the host.
+## Deployment (Google Cloud Run Job)
+
+The job runs on Google Cloud Run. The Cloud Run Job is defined in `cloudrun-job.yaml` (2 vCPU, 2 GiB memory, `us-east1`, project `seotools01`).
+
+### 1. Set up production environment variables
+
+Create `.env.production` with the same variables as `.env.local`. A trailing newline is required for correct parsing:
 
 ```bash
-pnpm install
-pnpm start:dev
+cp .env.sample .env.production
+# fill in production values — ensure the file ends with a newline
+```
+
+### 2. Build and deploy the image
+
+Uses Google Cloud Build (`cloudbuild.yaml`) to build the Docker image, push it to Container Registry, and update the Cloud Run Job to use the new image:
+
+```bash
+pnpm deploy:job
+# or: bash deploy.sh
+```
+
+### 3. Update the Cloud Run Job spec
+
+Apply changes to the job configuration (resources, timeouts, etc.) from `cloudrun-job.yaml`:
+
+```bash
+pnpm update-job
+# or: bash update-cloudrun-job.sh
+```
+
+### 4. Execute the job on Cloud Run
+
+Runs the Cloud Run Job with environment variables loaded from `.env.production`:
+
+```bash
+pnpm exec:cloud
+# or: bash execute-on-cloud.sh
 ```
 
 ---
