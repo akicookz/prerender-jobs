@@ -9,3 +9,12 @@
 **/.editorconfig
 **/.aws
 **/dist
+**/.env.local
+**/.env.local
+**/.cursorignore
+**/.gitignore
+**/cloudbuild.yaml
+**/cloudrun-job.yaml
+**/execute-on-local.sh
+**/execute-on-cloud.sh
+**/deploy.sh

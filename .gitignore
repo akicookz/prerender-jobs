@@ -65,4 +65,5 @@ package-lock.json
 *v8.log
 /lib/
 .env.local
+.env.production
 dist/

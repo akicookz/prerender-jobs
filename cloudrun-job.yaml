@@ -1,0 +1,21 @@
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: prerender-jobs
+  labels:
+    cloud.googleapis.com/location: us-east1
+spec:
+  template:
+    spec:
+      taskCount: 1
+      template:
+        spec:
+          containers:
+            - name: prerender-jobs-1
+              image: gcr.io/seotools01/prerender-jobs:latest
+              resources:
+                limits:
+                  cpu: 2000m
+                  memory: 2Gi
+          maxRetries: 2
+          timeoutSeconds: "600"

@@ -7,9 +7,12 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "lint": "eslint src",
-    "start:dev": "bash run-local.sh",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "deploy:job": "bash deploy.sh",
+    "update-job": "bash update-cloudrun-job.sh",
+    "exec:local": "bash execute-on-local.sh",
+    "exec:cloud": "bash execute-on-cloud.sh"
   },
   "keywords": [],
   "author": "",
