@@ -39,24 +39,24 @@ Copy the sample file and fill in your values:
 cp .env.sample .env.local
 ```
 
-| Variable                 | Required | Default                  | Description                                                                  |
-| ------------------------ | -------- | ------------------------ | ---------------------------------------------------------------------------- |
-| `URL_LIST`               | yes      | —                        | Comma-separated list of URLs to prerender (all must share the same hostname) |
-| `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                        |
-| `CF_API_TOKEN`           | yes      | —                        | Cloudflare API token (KV write access)                                       |
-| `R2_ACCESS_KEY_ID`       | yes      | —                        | R2 S3-compatible access key                                                  |
-| `R2_SECRET_ACCESS_KEY`   | yes      | —                        | R2 S3-compatible secret key                                                  |
-| `R2_BUCKET_NAME`         | yes      | —                        | Target R2 bucket name                                                        |
-| `KV_NAMESPACE_ID`        | yes      | —                        | KV namespace ID for the cache index                                          |
-| `SITEMAP_URL`            | no       | `<hostname>/sitemap.xml` | Explicit sitemap URL                                                         |
-| `SITEMAP_UPDATED_WITHIN` | no       | `all`                    | Filter sitemap URLs by lastmod: `1d`, `3d`, `7d`, `30d`, `all`               |
-| `CACHE_TTL`              | no       | `604800` (7 days)        | Cache TTL in seconds                                                         |
-| `USER_AGENT`             | no       | Chrome 124 UA string     | Custom user agent string                                                     |
-| `CONCURRENCY`            | no       | `1`                      | Number of pages to render in parallel                                        |
-| `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2 and KV                                |
-| `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                            |
+| Variable                 | Required | Default                  | Description                                                                           |
+| ------------------------ | -------- | ------------------------ | ------------------------------------------------------------------------------------- |
+| `URL_LIST`               | yes      | —                        | Comma-separated list of URLs to prerender (all must share the same hostname)          |
+| `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                                 |
+| `CF_API_TOKEN`           | yes      | —                        | Cloudflare API token (KV write access)                                                |
+| `R2_ACCESS_KEY_ID`       | yes      | —                        | R2 S3-compatible access key                                                           |
+| `R2_SECRET_ACCESS_KEY`   | yes      | —                        | R2 S3-compatible secret key                                                           |
+| `R2_BUCKET_NAME`         | yes      | —                        | Target R2 bucket name                                                                 |
+| `KV_NAMESPACE_ID`        | yes      | —                        | KV namespace ID for the cache index                                                   |
+| `SITEMAP_URL`            | no       | `<hostname>/sitemap.xml` | Explicit sitemap URL                                                                  |
+| `SITEMAP_UPDATED_WITHIN` | no       | `all`                    | Filter sitemap URLs by lastmod: `1d`, `3d`, `7d`, `30d`, `all`                        |
+| `CACHE_TTL`              | no       | `604800` (7 days)        | Cache TTL in seconds                                                                  |
+| `USER_AGENT`             | no       | Chrome 124 UA string     | Custom user agent string                                                              |
+| `CONCURRENCY`            | no       | `1`                      | Number of pages to render in parallel                                                 |
+| `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2 and KV                                         |
+| `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                                     |
 | `TELEGRAM_BOT_TOKEN`     | no       | built-in default         | Telegram bot token for result/failure notifications; uses a shared default if omitted |
-| `TELEGRAM_CHAT_ID`       | no       | built-in default         | Telegram chat ID to send notifications to; uses a shared default if omitted  |
+| `TELEGRAM_CHAT_ID`       | no       | built-in default         | Telegram chat ID to send notifications to; uses a shared default if omitted           |
 
 ### 2. Run via Docker
 
@@ -73,7 +73,7 @@ This builds the image and runs it with `.env.local` injected as environment vari
 
 ## Deployment (Google Cloud Run Job)
 
-The job runs on Google Cloud Run. The Cloud Run Job is defined in `cloudrun-job.yaml` (2 vCPU, 2 GiB memory, `us-east1`, 15-minute timeout, project `seotools01`).
+The job runs on Google Cloud Run. The Cloud Run Job is defined in `cloudrun-job.yaml` (2 vCPU, 2 GiB memory, `us-east1`, 20-minute timeout, project `seotools01`).
 
 ### 1. Set up production environment variables
 
