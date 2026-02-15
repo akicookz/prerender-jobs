@@ -376,7 +376,7 @@ main({ config })
             },
             null,
             2,
-          )}\n\`\`\``,
+          )}\n\`\`\``.slice(0, 4096), // Telegram message length limit is 4096 characters
           {
             parse_mode: "MarkdownV2",
           },
