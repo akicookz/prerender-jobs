@@ -63,6 +63,7 @@ async function prepareTargetUrls({
 async function reportResult({
   config,
   domain,
+  successUrls,
   countRendered,
   countKvSynced,
   countR2Synced,
@@ -75,6 +76,7 @@ async function reportResult({
 }: {
   config: Configuration;
   domain: string;
+  successUrls: string[];
   countRendered: number;
   countKvSynced: number;
   countR2Synced: number;
@@ -131,9 +133,13 @@ async function reportResult({
     try {
       const response = await fetch(config.webhookUrl, {
         method: "POST",
-        body: JSON.stringify(resultBody, null, 2),
+        body: JSON.stringify({
+          ...resultBody,
+          success_paths: successUrls.map((url) => extractPathFromUrl(url)),
+        }),
         headers: {
           "Content-Type": "application/json",
+          "x-webhook-secret": config.webhookSecret ?? "",
         },
       });
       if (!response.ok) {
@@ -267,6 +273,7 @@ async function runPipelineBatches({
   countRendered: number;
   countKvSynced: number;
   countR2Synced: number;
+  successUrls: string[];
   failedToRenderUrls: string[];
   failedToSyncUrls: string[];
 }> {
@@ -303,6 +310,12 @@ async function runPipelineBatches({
       .length,
     countR2Synced: pipelineResults.filter((result) => result.isCachedToR2)
       .length,
+    successUrls: pipelineResults
+      .filter(
+        (result) =>
+          result.isRendered && result.isCachedToR2 && result.isCachedToKV,
+      )
+      .map((result) => result.url),
     failedToRenderUrls: pipelineResults
       .filter((result) => !result.isRendered)
       .map((result) => result.url),
@@ -316,7 +329,17 @@ async function main({ config }: { config: Configuration }): Promise<void> {
   const startedAt = Date.now();
 
   // STEP 1 : Prepare target URLs
-  const { urlsToRender, sitemapUrl } = await prepareTargetUrls({ config });
+  let urlsToRender: string[] = [...config.urlList];
+  let sitemapUrl: string = "";
+  if (config.skipSitemapParsing) {
+    logger.info(`SKIPPING SITEMAP PARSING: SKIP_SITEMAP_PARSING is true`);
+    urlsToRender = config.urlList;
+    sitemapUrl = "skipped";
+  } else {
+    const result = await prepareTargetUrls({ config });
+    urlsToRender = result.urlsToRender;
+    sitemapUrl = result.sitemapUrl;
+  }
 
   // STEP 2 : Launch browser
   const browser = await launchBrowser();
@@ -326,6 +349,7 @@ async function main({ config }: { config: Configuration }): Promise<void> {
     countRendered,
     countKvSynced,
     countR2Synced,
+    successUrls,
     failedToRenderUrls,
     failedToSyncUrls,
   } = await runPipelineBatches({
@@ -341,6 +365,7 @@ async function main({ config }: { config: Configuration }): Promise<void> {
   const domain = getDomain(urlsToRender[0]!);
   await reportResult({
     config,
+    successUrls,
     countRendered,
     countKvSynced,
     countR2Synced,
@@ -348,7 +373,9 @@ async function main({ config }: { config: Configuration }): Promise<void> {
     failedToSyncUrls,
     domain: domain!,
     sitemapUrl,
-    sitemapFilter: config.sitemapUpdatedWithin,
+    sitemapFilter: config.skipSitemapParsing
+      ? "skipped"
+      : config.sitemapUpdatedWithin,
     startedAt,
     completedAt,
   });

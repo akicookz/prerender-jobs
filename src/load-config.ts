@@ -27,11 +27,13 @@ enum ConfigEnvVariables {
   // OPTIONAL
   CONCURRENCY = "CONCURRENCY",
   WEBHOOK_URL = "WEBHOOK_URL",
+  WEBHOOK_SECRET = "WEBHOOK_SECRET",
   SITEMAP_URL = "SITEMAP_URL",
   SITEMAP_UPDATED_WITHIN = "SITEMAP_UPDATED_WITHIN",
   CACHE_TTL = "CACHE_TTL",
   USER_AGENT = "USER_AGENT",
   SKIP_CACHE_SYNC = "SKIP_CACHE_SYNC",
+  SKIP_SITEMAP_PARSING = "SKIP_SITEMAP_PARSING",
   TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN",
   TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID",
 }
@@ -41,6 +43,8 @@ export interface Configuration {
   urlList: string[];
   // Callback URL on completion
   webhookUrl?: string;
+  // Webhook secret
+  webhookSecret?: string;
   // Explicit sitemap URL
   sitemapUrl?: string;
   // Filter by lastmod
@@ -65,6 +69,8 @@ export interface Configuration {
   concurrency: number;
   // Whether to skip cache sync
   skipCacheSync: boolean;
+  // Whether to skip sitemap parsing
+  skipSitemapParsing: boolean;
   // Telegram bot token
   telegramBotToken?: string;
   // Telegram chat ID
@@ -88,6 +94,7 @@ export function loadConfig(): Configuration {
 
   // Webhook URL, Telegram bot token, Telegram chat ID, and sitemap URL are optional
   const webhookUrl = process.env[ConfigEnvVariables.WEBHOOK_URL];
+  const webhookSecret = process.env[ConfigEnvVariables.WEBHOOK_SECRET];
   const telegramBotToken = process.env[ConfigEnvVariables.TELEGRAM_BOT_TOKEN];
   const telegramChatId = process.env[ConfigEnvVariables.TELEGRAM_CHAT_ID];
   const sitemapUrl = process.env[ConfigEnvVariables.SITEMAP_URL];
@@ -153,9 +160,17 @@ export function loadConfig(): Configuration {
     process.env[ConfigEnvVariables.SKIP_CACHE_SYNC]?.toLowerCase();
   const skipCacheSync = skipCacheSyncRaw ? skipCacheSyncRaw === "true" : true;
 
+  // Whether to skip sitemap parsing is optional, default to false if not set
+  const skipSitemapParsingRaw =
+    process.env[ConfigEnvVariables.SKIP_SITEMAP_PARSING]?.toLowerCase();
+  const skipSitemapParsing = skipSitemapParsingRaw
+    ? skipSitemapParsingRaw === "true"
+    : false;
+
   return {
     urlList,
     webhookUrl,
+    webhookSecret,
     sitemapUrl,
     sitemapUpdatedWithin,
     cfAccountId,
@@ -168,6 +183,7 @@ export function loadConfig(): Configuration {
     userAgent,
     concurrency,
     skipCacheSync,
+    skipSitemapParsing,
     telegramBotToken,
     telegramChatId,
   };
