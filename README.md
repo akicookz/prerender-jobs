@@ -6,7 +6,7 @@ Prerender engine that fetches pages via headless Chromium, captures full HTML sn
 
 The job runs in three top-level steps:
 
-1. **Prepare URLs** — merges `URL_LIST` with all URLs discovered from the sitemap, deduplicates, and normalises them.
+1. **Prepare URLs** — merges `URL_LIST` with all URLs discovered from the sitemap, deduplicates, and normalises them. If `SKIP_SITEMAP_PARSING=true`, sitemap discovery is skipped and only the URLs in `URL_LIST` are used.
 2. **Launch browser** — opens a single shared headless Chromium instance (puppeteer-core) reused for all pages.
 3. **Run pipeline batches** — URLs are split into batches of `CONCURRENCY` and each batch is processed concurrently. Within a batch, every URL flows through a per-URL pipeline:
    1. **Render** — navigates the URL in a new tab and waits for the page to be ready (see [Readiness detection](#readiness-detection) below). If rendering fails the URL is skipped.
@@ -54,7 +54,9 @@ cp .env.sample .env.local
 | `USER_AGENT`             | no       | Chrome 124 UA string     | Custom user agent string                                                              |
 | `CONCURRENCY`            | no       | `1`                      | Number of pages to render in parallel                                                 |
 | `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2 and KV                                         |
+| `SKIP_SITEMAP_PARSING`   | no       | `false`                  | Set to `true` to skip sitemap discovery and only render URLs in `URL_LIST`            |
 | `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                                     |
+| `WEBHOOK_SECRET`         | no       | —                        | Secret sent as `x-webhook-secret` header with every webhook request                  |
 | `TELEGRAM_BOT_TOKEN`     | no       | built-in default         | Telegram bot token for result/failure notifications; uses a shared default if omitted |
 | `TELEGRAM_CHAT_ID`       | no       | built-in default         | Telegram chat ID to send notifications to; uses a shared default if omitted           |
 
@@ -133,7 +135,10 @@ On completion the job sends a JSON summary via Telegram (if configured) and/or P
     "failed_to_render": { "urls": [], "count": 0 },
     "failed_to_sync": { "urls": [], "count": 0 },
   },
+  "success_paths": ["/", "/about", "/blog/post-1"], // paths fully rendered and synced to R2 + KV
 }
 ```
+
+The webhook request includes an `x-webhook-secret` header (empty string if `WEBHOOK_SECRET` is not set).
 
 If the job exits with a fatal error before reaching the report step, a separate Telegram message is sent containing the `google_cloud_execution_id` and the error reason.
