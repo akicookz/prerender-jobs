@@ -1,8 +1,10 @@
-import dotenv from "dotenv";
-import { isMemberOfEnum } from "./util.js";
+import { isMemberOfEnum } from "./util";
 import validator from "validator";
+import { getHostname } from "tldts";
 
 const DEFAULT_CACHE_TTL = 604800; // 7 days
+const DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
 export enum LastmodFilter {
   ONE_DAY = "1d",
@@ -23,20 +25,28 @@ enum ConfigEnvVariables {
   KV_NAMESPACE_ID = "KV_NAMESPACE_ID",
 
   // OPTIONAL
+  CONCURRENCY = "CONCURRENCY",
   WEBHOOK_URL = "WEBHOOK_URL",
+  WEBHOOK_SECRET = "WEBHOOK_SECRET",
   SITEMAP_URL = "SITEMAP_URL",
   SITEMAP_UPDATED_WITHIN = "SITEMAP_UPDATED_WITHIN",
   CACHE_TTL = "CACHE_TTL",
   USER_AGENT = "USER_AGENT",
+  SKIP_CACHE_SYNC = "SKIP_CACHE_SYNC",
+  SKIP_SITEMAP_PARSING = "SKIP_SITEMAP_PARSING",
+  TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN",
+  TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID",
 }
 
 export interface Configuration {
   // CSV of URLs
   urlList: string[];
   // Callback URL on completion
-  webhookUrl: string | undefined;
+  webhookUrl?: string;
+  // Webhook secret
+  webhookSecret?: string;
   // Explicit sitemap URL
-  sitemapUrl: string | undefined;
+  sitemapUrl?: string;
   // Filter by lastmod
   sitemapUpdatedWithin: LastmodFilter;
   // Cloudflare account ID
@@ -54,17 +64,20 @@ export interface Configuration {
   // TTL in seconds
   cacheTtl: number;
   // User agent
-  userAgent: string | undefined;
+  userAgent: string;
+  // Concurrency
+  concurrency: number;
+  // Whether to skip cache sync
+  skipCacheSync: boolean;
+  // Whether to skip sitemap parsing
+  skipSitemapParsing: boolean;
+  // Telegram bot token
+  telegramBotToken?: string;
+  // Telegram chat ID
+  telegramChatId?: string;
 }
 
 export function loadConfig(): Configuration {
-  const isDevelopment = process.env.NODE_ENV === "development";
-  if (isDevelopment) {
-    dotenv.config({
-      path: ".env.local",
-    });
-  }
-
   // URL list is required
   const urlListRaw = process.env[ConfigEnvVariables.URL_LIST] ?? "";
   const urlList = urlListRaw.split(",").map((item) => item.trim());
@@ -74,9 +87,16 @@ export function loadConfig(): Configuration {
   if (urlList.some((url) => !validator.isURL(url))) {
     throw new Error("URL_LIST must be a list of URLs starting with https://");
   }
+  const urlHostname = getHostname(urlList[0]!);
+  if (urlList.some((url) => getHostname(url) !== urlHostname)) {
+    throw new Error("URL_LIST must be a list of URLs with the same hostname");
+  }
 
-  // Webhook URL and sitemap configuration are optional
+  // Webhook URL, Telegram bot token, Telegram chat ID, and sitemap URL are optional
   const webhookUrl = process.env[ConfigEnvVariables.WEBHOOK_URL];
+  const webhookSecret = process.env[ConfigEnvVariables.WEBHOOK_SECRET];
+  const telegramBotToken = process.env[ConfigEnvVariables.TELEGRAM_BOT_TOKEN];
+  const telegramChatId = process.env[ConfigEnvVariables.TELEGRAM_CHAT_ID];
   const sitemapUrl = process.env[ConfigEnvVariables.SITEMAP_URL];
 
   const sitemapUpdatedWithin =
@@ -122,11 +142,35 @@ export function loadConfig(): Configuration {
   }
 
   // User agent is optional, default to default user agent if not set
-  const userAgent = process.env[ConfigEnvVariables.USER_AGENT];
+  const userAgent =
+    process.env[ConfigEnvVariables.USER_AGENT] ?? DEFAULT_USER_AGENT;
+
+  // Concurrency is optional, default to 1 if not set
+  const concurrencyRaw = process.env[ConfigEnvVariables.CONCURRENCY];
+  let concurrency: number = 1;
+  if (concurrencyRaw && !Number.isNaN(parseInt(concurrencyRaw))) {
+    concurrency = parseInt(concurrencyRaw);
+  }
+  if (concurrency < 1) {
+    throw new Error("CONCURRENCY must be at least 1");
+  }
+
+  // Whether to skip cache sync is optional, default to true if not set
+  const skipCacheSyncRaw =
+    process.env[ConfigEnvVariables.SKIP_CACHE_SYNC]?.toLowerCase();
+  const skipCacheSync = skipCacheSyncRaw ? skipCacheSyncRaw === "true" : true;
+
+  // Whether to skip sitemap parsing is optional, default to false if not set
+  const skipSitemapParsingRaw =
+    process.env[ConfigEnvVariables.SKIP_SITEMAP_PARSING]?.toLowerCase();
+  const skipSitemapParsing = skipSitemapParsingRaw
+    ? skipSitemapParsingRaw === "true"
+    : false;
 
   return {
     urlList,
     webhookUrl,
+    webhookSecret,
     sitemapUrl,
     sitemapUpdatedWithin,
     cfAccountId,
@@ -137,5 +181,10 @@ export function loadConfig(): Configuration {
     kvNamespaceId,
     cacheTtl,
     userAgent,
+    concurrency,
+    skipCacheSync,
+    skipSitemapParsing,
+    telegramBotToken,
+    telegramChatId,
   };
 }

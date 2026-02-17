@@ -1,13 +1,12 @@
-import puppeteer, { Browser, HTTPRequest, Page } from "puppeteer-core";
+import { Browser, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
-import { logger } from "./logger.js";
+import { AppLogger } from "./logger";
 
 const DEFAULT_RENDER_TIMEOUT = 30000; // 30 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
-const DEFAULT_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
 export interface RenderResult {
+  url: string;
   html: string;
   statusCode: number;
   xRobotsTag?: string | null;
@@ -21,68 +20,32 @@ type ReadinessState = {
 };
 
 export class RenderEngine {
-  private _urls: string[];
-  private _userAgent: string;
-  private browser: Browser | null = null;
+  private readonly _url: string;
+  private readonly _browser: Browser;
+  private readonly _userAgent: string;
+  private readonly _logger: AppLogger;
 
   static register({
-    targetUrls,
+    targetUrl,
+    browser,
     userAgent,
   }: {
-    targetUrls: string[];
-    userAgent: string | undefined;
+    targetUrl: string;
+    browser: Browser;
+    userAgent: string;
   }) {
-    return new RenderEngine(targetUrls, userAgent);
+    return new RenderEngine(targetUrl, browser, userAgent);
   }
 
-  private constructor(urls: string[], userAgent?: string) {
-    this._urls = urls;
-    logger.info(`RenderEngine registered with ${this._urls.length} URLs`);
-    this._urls.forEach((url, index) => {
-      logger.info(`  - ${index + 1}: ${url}`);
-    });
-    this._userAgent = userAgent ? userAgent.trim() : DEFAULT_USER_AGENT;
+  private constructor(targetUrl: string, browser: Browser, userAgent: string) {
+    this._url = targetUrl;
+    this._browser = browser;
+    this._userAgent = userAgent.trim();
+    this._logger = AppLogger.register({ prefix: "render-engine" });
   }
 
-  async renderAll(): Promise<RenderResult[]> {
-    try {
-      this.browser = await puppeteer.launch({
-        executablePath: "/usr/bin/chromium",
-        args: ["--no-sandbox", "--disable-setuid-sandbox"],
-      });
-      logger.info("Browser launched successfully");
-    } catch (e) {
-      logger.error(`Failed to launch browser: ${e}`);
-      throw e;
-    }
-    if (!this.browser) {
-      throw new Error("Browser not initialized");
-    }
-    try {
-      logger.info(`Rendering ${this._urls.length} URLs`);
-      const results: RenderResult[] = [];
-      for (const url of this._urls) {
-        const result = await this.renderPage({ url });
-        results.push(result);
-        logger.info(`URL: ${result.finalUrl}`);
-        logger.info(`Status Code: ${result.statusCode}`);
-        logger.info(`X-Robots-Tag: ${result.xRobotsTag}`);
-        logger.info(`HTML size: ${result.html.length} characters`);
-      }
-      return results;
-    } catch (e) {
-      logger.error(`Failed to render URLs: ${e}`);
-      throw e;
-    } finally {
-      await this.browser?.close();
-    }
-  }
-
-  private async renderPage({ url }: { url: string }): Promise<RenderResult> {
-    if (!this.browser) {
-      throw new Error("Browser not initialized");
-    }
-    const page = await this.browser.newPage();
+  async renderPage(): Promise<RenderResult> {
+    const page = await this._browser.newPage();
 
     try {
       await page.setUserAgent({ userAgent: this._userAgent });
@@ -93,22 +56,24 @@ export class RenderEngine {
 
       await this.injectPrerenderScripts({ page });
 
-      const response = await page.goto(url, {
+      const response = await page.goto(this._url, {
         waitUntil: "load",
         timeout: DEFAULT_RENDER_TIMEOUT,
       });
-      await this.waitForPageReady({ page, url });
+      await this.waitForPageReady({ page, url: this._url });
       if (!response) {
-        throw new Error(`Failed to navigate to ${url}`);
+        throw new Error(`Failed to navigate to ${this._url}`);
       }
 
       const html = await page.content();
       const statusCode = response.status();
       const xRobotsTag = response.headers()["x-robots-tag"] ?? null;
       const finalUrl = page.url();
-      return { html, statusCode, xRobotsTag, finalUrl };
+      return { url: this._url, html, statusCode, xRobotsTag, finalUrl };
     } catch (e) {
-      logger.error(`Failed to render page ${url}: ${e}`);
+      this._logger.error(
+        `Failed to render page ${this._url}: ${e instanceof Error ? e.message : String(e)}`,
+      );
       throw e;
     } finally {
       await page.close();
@@ -186,9 +151,9 @@ export class RenderEngine {
     try {
       return await page.evaluate(() => {
         // @ts-expect-error - custom window properties
-        const ready = window.prerenderReady;
+        const ready = window.prerenderReady as boolean;
         // @ts-expect-error - custom window properties
-        const snapshot = window.htmlSnapshot;
+        const snapshot = window.htmlSnapshot as boolean;
         return ready === true || snapshot === true;
       });
     } catch {
@@ -200,7 +165,7 @@ export class RenderEngine {
     try {
       return await page.evaluate(() => {
         // @ts-expect-error - custom window properties
-        return window.__lastDomChange ?? Date.now();
+        return (window.__lastDomChange ?? Date.now()) as number;
       });
     } catch {
       return Date.now();
@@ -249,7 +214,7 @@ export class RenderEngine {
         });
       }
     } catch (e) {
-      logger.debug("[Prerender] Error setting prerender init script", e);
+      this._logger.debug("[Prerender] Error setting prerender init script", e);
     }
   }
 
@@ -310,7 +275,7 @@ export class RenderEngine {
         settled = true;
         resolve(value);
       };
-      const settleReject = (error: unknown) => {
+      const settleReject = (error: Error) => {
         if (settled) {
           return;
         }
@@ -328,13 +293,18 @@ export class RenderEngine {
 
         // Hard timeout reached, take snapshot
         if (elapsed >= HARD_TIMEOUT_MS) {
-          logger.debug("[Prerender] Hard timeout reached, taking snapshot");
+          this._logger.debug(
+            "[Prerender] Hard timeout reached, taking snapshot",
+          );
+          this._logger.debug(
+            "[Prerender] Hard timeout reached, taking snapshot",
+          );
           return settleResolve("hard_timeout");
         }
 
         // App signaled ready via prerenderReady/htmlSnapshot
         if (await this.checkAppSignal({ page })) {
-          logger.debug(
+          this._logger.debug(
             "[Prerender] App signaled ready via prerenderReady/htmlSnapshot",
           );
           return settleResolve("app_signaled");
@@ -364,7 +334,7 @@ export class RenderEngine {
         const domStable = state.domStableSince !== null;
 
         if (networkStable && domStable) {
-          logger.debug(
+          this._logger.debug(
             `[Prerender] Page ready: network idle for ${networkIdleDuration}ms, DOM stable for ${domIdleTime}ms`,
           );
           return settleResolve("network_and_dom_stable");
@@ -374,7 +344,7 @@ export class RenderEngine {
         const DOM_EXTENDED_WAIT_MS = 3000;
         if (elapsed >= MIN_WAIT_MS && networkStable) {
           if (elapsed >= MIN_WAIT_MS + DOM_EXTENDED_WAIT_MS) {
-            logger.debug(
+            this._logger.debug(
               "[Prerender] Network stable, DOM still active but extended wait exceeded",
             );
             return settleResolve("network_stable_dom_timeout");
@@ -382,11 +352,11 @@ export class RenderEngine {
         }
 
         pendingTimeout = setTimeout(
-          () => tick().catch((e) => settleReject(e)),
+          () => void tick().catch((e: Error) => settleReject(e)),
           POLL_INTERVAL_MS,
         );
       };
-      tick().catch((e) => settleReject(e));
+      tick().catch((e: Error) => settleReject(e));
     }).finally(() => {
       if (pendingTimeout) {
         clearTimeout(pendingTimeout);
