@@ -159,6 +159,24 @@ async function syncCache({
       r2Synced,
     });
   }
+  logger.info(`Cache sync completed for ${cacheSyncResults.length} URLs:`);
+  logger.info(
+    `  - ${cacheSyncResults.filter((result) => result.kvSynced).length} URLs synced to KV`,
+  );
+  logger.info(
+    `  - ${cacheSyncResults.filter((result) => result.r2Synced).length} URLs synced to R2`,
+  );
+  const failedToSync = cacheSyncResults.filter(
+    (result) => !result.r2Synced || !result.kvSynced,
+  );
+  if (failedToSync.length > 0) {
+    logger.info(
+      `  - Failed to sync ${failedToSync.length} URLs to either KV or R2`,
+    );
+    failedToSync.forEach((result) => {
+      logger.info(`    - ${result.renderResult.finalUrl}`);
+    });
+  }
   return cacheSyncResults;
 }
 

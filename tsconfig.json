@@ -1,5 +1,6 @@
 {
-  "exclude": ["src/**/*.test.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.spec.ts", "dist", "node_modules"],
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
