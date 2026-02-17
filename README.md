@@ -4,13 +4,15 @@ Prerender engine that fetches pages via headless Chromium, captures full HTML sn
 
 ## How it works
 
-The pipeline runs in five steps:
+The job runs in three top-level steps:
 
 1. **Prepare URLs** — merges `URL_LIST` with all URLs discovered from the sitemap, deduplicates, and normalises them.
-2. **Render pages** — opens each URL in a headless Chromium tab (puppeteer-core) and waits for the page to be ready (see [Readiness detection](#readiness-detection) below).
-3. **Analyse SEO** — parses the rendered HTML to extract SEO signals (title, meta description, canonical, robots directives, etc.).
-4. **Sync cache** — uploads the HTML snapshot to Cloudflare R2 and writes the metadata index to Cloudflare KV (skipped when `SKIP_CACHE_SYNC=true`).
-5. **Webhook** — POSTs a JSON summary to `WEBHOOK_URL` (skipped when not configured).
+2. **Launch browser** — opens a single shared headless Chromium instance (puppeteer-core) reused for all pages.
+3. **Run pipeline batches** — URLs are split into batches of `CONCURRENCY` and each batch is processed concurrently. Within a batch, every URL flows through a per-URL pipeline:
+   1. **Render** — navigates the URL in a new tab and waits for the page to be ready (see [Readiness detection](#readiness-detection) below). If rendering fails the URL is skipped.
+   2. **Analyse SEO** — parses the rendered HTML to extract SEO signals (title, meta description, canonical, robots directives, etc.). If analysis fails the URL is skipped.
+   3. **Sync cache** — uploads the HTML snapshot to Cloudflare R2 and writes the metadata index to Cloudflare KV (skipped when `SKIP_CACHE_SYNC=true`).
+4. **Report result** — sends a JSON summary to Telegram and/or POSTs to `WEBHOOK_URL`. Both paths are fire-and-log; errors do not abort the job. Fatal errors that crash the job also trigger a Telegram message with the `CLOUD_RUN_EXECUTION` ID and failure reason.
 
 ### Readiness detection
 
@@ -37,22 +39,24 @@ Copy the sample file and fill in your values:
 cp .env.sample .env.local
 ```
 
-| Variable                 | Required | Default                  | Description                                                                  |
-| ------------------------ | -------- | ------------------------ | ---------------------------------------------------------------------------- |
-| `URL_LIST`               | yes      | —                        | Comma-separated list of URLs to prerender (all must share the same hostname) |
-| `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                        |
-| `CF_API_TOKEN`           | yes      | —                        | Cloudflare API token (KV write access)                                       |
-| `R2_ACCESS_KEY_ID`       | yes      | —                        | R2 S3-compatible access key                                                  |
-| `R2_SECRET_ACCESS_KEY`   | yes      | —                        | R2 S3-compatible secret key                                                  |
-| `R2_BUCKET_NAME`         | yes      | —                        | Target R2 bucket name                                                        |
-| `KV_NAMESPACE_ID`        | yes      | —                        | KV namespace ID for the cache index                                          |
-| `SITEMAP_URL`            | no       | `<hostname>/sitemap.xml` | Explicit sitemap URL                                                         |
-| `SITEMAP_UPDATED_WITHIN` | no       | `all`                    | Filter sitemap URLs by lastmod: `1d`, `3d`, `7d`, `30d`, `all`               |
-| `CACHE_TTL`              | no       | `604800` (7 days)        | Cache TTL in seconds                                                         |
-| `USER_AGENT`             | no       | Chrome 124 UA string     | Custom user agent string                                                     |
-| `CONCURRENCY`            | no       | `1`                      | Number of pages to render in parallel                                        |
-| `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2 and KV                                |
-| `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                            |
+| Variable                 | Required | Default                  | Description                                                                           |
+| ------------------------ | -------- | ------------------------ | ------------------------------------------------------------------------------------- |
+| `URL_LIST`               | yes      | —                        | Comma-separated list of URLs to prerender (all must share the same hostname)          |
+| `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                                 |
+| `CF_API_TOKEN`           | yes      | —                        | Cloudflare API token (KV write access)                                                |
+| `R2_ACCESS_KEY_ID`       | yes      | —                        | R2 S3-compatible access key                                                           |
+| `R2_SECRET_ACCESS_KEY`   | yes      | —                        | R2 S3-compatible secret key                                                           |
+| `R2_BUCKET_NAME`         | yes      | —                        | Target R2 bucket name                                                                 |
+| `KV_NAMESPACE_ID`        | yes      | —                        | KV namespace ID for the cache index                                                   |
+| `SITEMAP_URL`            | no       | `<hostname>/sitemap.xml` | Explicit sitemap URL                                                                  |
+| `SITEMAP_UPDATED_WITHIN` | no       | `all`                    | Filter sitemap URLs by lastmod: `1d`, `3d`, `7d`, `30d`, `all`                        |
+| `CACHE_TTL`              | no       | `604800` (7 days)        | Cache TTL in seconds                                                                  |
+| `USER_AGENT`             | no       | Chrome 124 UA string     | Custom user agent string                                                              |
+| `CONCURRENCY`            | no       | `1`                      | Number of pages to render in parallel                                                 |
+| `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2 and KV                                         |
+| `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                                     |
+| `TELEGRAM_BOT_TOKEN`     | no       | built-in default         | Telegram bot token for result/failure notifications; uses a shared default if omitted |
+| `TELEGRAM_CHAT_ID`       | no       | built-in default         | Telegram chat ID to send notifications to; uses a shared default if omitted           |
 
 ### 2. Run via Docker
 
@@ -69,7 +73,7 @@ This builds the image and runs it with `.env.local` injected as environment vari
 
 ## Deployment (Google Cloud Run Job)
 
-The job runs on Google Cloud Run. The Cloud Run Job is defined in `cloudrun-job.yaml` (2 vCPU, 2 GiB memory, `us-east1`, project `seotools01`).
+The job runs on Google Cloud Run. The Cloud Run Job is defined in `cloudrun-job.yaml` (2 vCPU, 2 GiB memory, `us-east1`, 20-minute timeout, project `seotools01`).
 
 ### 1. Set up production environment variables
 
@@ -109,13 +113,14 @@ pnpm exec:cloud
 
 ---
 
-## Webhook payload
+## Result reporting
 
-When `WEBHOOK_URL` is set, a `POST` request is sent on completion with the following JSON body:
+On completion the job sends a JSON summary via Telegram (if configured) and/or POSTs it to `WEBHOOK_URL` (if configured). Both are optional and independent.
 
 ```jsonc
 {
   "run_id": 1234567890, // epoch ms when the job started
+  "google_cloud_execution_id": "abc123", // Cloud Run execution ID, or "local"
   "domain": "example.com",
   "urls_rendered": 42,
   "urls_synced_r2": 42,
@@ -130,3 +135,5 @@ When `WEBHOOK_URL` is set, a `POST` request is sent on completion with the follo
   },
 }
 ```
+
+If the job exits with a fatal error before reaching the report step, a separate Telegram message is sent containing the `google_cloud_execution_id` and the error reason.

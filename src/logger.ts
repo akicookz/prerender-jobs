@@ -1,5 +1,7 @@
 import { Logger, createLogger, transports } from "winston";
 
+export const INDENT = "  ";
+
 export class AppLogger {
   private constructor(
     private readonly _logger: Logger,

@@ -13,9 +13,14 @@ spec:
           containers:
             - name: prerender-jobs-1
               image: gcr.io/seotools01/prerender-jobs:latest
+              env:
+                - name: TELEGRAM_BOT_TOKEN
+                  value: 8071465366:AAHkJmBl9JzP0AIJf8Edww4Sa3e_FX4Nux4
+                - name: TELEGRAM_CHAT_ID
+                  value: "7716949926"
               resources:
                 limits:
                   cpu: 2000m
                   memory: 2Gi
           maxRetries: 2
-          timeoutSeconds: "600"
+          timeoutSeconds: "1200"
