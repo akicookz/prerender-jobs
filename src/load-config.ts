@@ -27,7 +27,7 @@ enum ConfigEnvVariables {
   // OPTIONAL
   CONCURRENCY = "CONCURRENCY",
   WEBHOOK_URL = "WEBHOOK_URL",
-  WEBHOOK_SECRET = "WEBHOOK_SECRET",
+  WEBHOOK_SIGNATURE = "WEBHOOK_SIGNATURE",
   SITEMAP_URL = "SITEMAP_URL",
   SITEMAP_UPDATED_WITHIN = "SITEMAP_UPDATED_WITHIN",
   CACHE_TTL = "CACHE_TTL",
@@ -44,7 +44,7 @@ export interface Configuration {
   // Callback URL on completion
   webhookUrl?: string;
   // Webhook secret
-  webhookSecret?: string;
+  webhookSignature?: string;
   // Explicit sitemap URL
   sitemapUrl?: string;
   // Filter by lastmod
@@ -94,7 +94,7 @@ export function loadConfig(): Configuration {
 
   // Webhook URL, Telegram bot token, Telegram chat ID, and sitemap URL are optional
   const webhookUrl = process.env[ConfigEnvVariables.WEBHOOK_URL];
-  const webhookSecret = process.env[ConfigEnvVariables.WEBHOOK_SECRET];
+  const webhookSignature = process.env[ConfigEnvVariables.WEBHOOK_SIGNATURE];
   const telegramBotToken = process.env[ConfigEnvVariables.TELEGRAM_BOT_TOKEN];
   const telegramChatId = process.env[ConfigEnvVariables.TELEGRAM_CHAT_ID];
   const sitemapUrl = process.env[ConfigEnvVariables.SITEMAP_URL];
@@ -170,7 +170,7 @@ export function loadConfig(): Configuration {
   return {
     urlList,
     webhookUrl,
-    webhookSecret,
+    webhookSignature,
     sitemapUrl,
     sitemapUpdatedWithin,
     cfAccountId,

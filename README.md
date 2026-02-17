@@ -56,7 +56,7 @@ cp .env.sample .env.local
 | `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2 and KV                                         |
 | `SKIP_SITEMAP_PARSING`   | no       | `false`                  | Set to `true` to skip sitemap discovery and only render URLs in `URL_LIST`            |
 | `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                                     |
-| `WEBHOOK_SECRET`         | no       | —                        | Secret sent as `x-webhook-secret` header with every webhook request                  |
+| `WEBHOOK_SIGNATURE`      | no       | —                        | Secret sent as `x-webhook-signature` header with every webhook request                |
 | `TELEGRAM_BOT_TOKEN`     | no       | built-in default         | Telegram bot token for result/failure notifications; uses a shared default if omitted |
 | `TELEGRAM_CHAT_ID`       | no       | built-in default         | Telegram chat ID to send notifications to; uses a shared default if omitted           |
 
@@ -139,6 +139,6 @@ On completion the job sends a JSON summary via Telegram (if configured) and/or P
 }
 ```
 
-The webhook request includes an `x-webhook-secret` header (empty string if `WEBHOOK_SECRET` is not set).
+The webhook request includes an `x-webhook-signature` header (empty string if `WEBHOOK_SIGNATURE` is not set).
 
 If the job exits with a fatal error before reaching the report step, a separate Telegram message is sent containing the `google_cloud_execution_id` and the error reason.

@@ -139,7 +139,7 @@ async function reportResult({
         }),
         headers: {
           "Content-Type": "application/json",
-          "x-webhook-secret": config.webhookSecret ?? "",
+          "x-webhook-signature": config.webhookSignature ?? "",
         },
       });
       if (!response.ok) {
