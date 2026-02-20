@@ -38,10 +38,12 @@ enum ConfigEnvVariables {
   TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN",
   TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID",
   RETRY_OPTIONS = "RETRY_OPTIONS",
+  REQUEST_SOURCE = "REQUEST_SOURCE",
 }
 
 export interface Configuration {
   runId: string;
+  requestSource: string;
   // CSV of URLs
   urlList: string[];
   // Callback URL on completion
@@ -86,6 +88,12 @@ export function loadConfig(): Configuration {
   const runId = process.env[ConfigEnvVariables.RUN_ID];
   if (!runId) {
     throw new Error("RUN_ID is required");
+  }
+
+  // Request source is required
+  const requestSource = process.env[ConfigEnvVariables.REQUEST_SOURCE];
+  if (!requestSource) {
+    throw new Error("REQUEST_SOURCE is required");
   }
 
   // URL list is required
@@ -182,6 +190,7 @@ export function loadConfig(): Configuration {
 
   return {
     runId,
+    requestSource,
     urlList,
     webhookUrl,
     webhookSignature,
