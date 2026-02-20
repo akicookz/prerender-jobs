@@ -88,7 +88,7 @@ async function reportResult({
   failedToSyncUrls: string[];
 }): Promise<void> {
   const resultBody: Record<string, unknown> = {
-    run_id: config.runId,
+    batch_id: config.batchId,
     source: config.requestSource,
     google_cloud_execution_id: process.env.CLOUD_RUN_EXECUTION ?? "local",
     domain,

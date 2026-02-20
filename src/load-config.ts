@@ -16,7 +16,7 @@ export enum LastmodFilter {
 
 enum ConfigEnvVariables {
   // REQUIRED
-  RUN_ID = "RUN_ID",
+  BATCH_ID = "BATCH_ID",
   URL_LIST = "URL_LIST",
   CF_ACCOUNT_ID = "CF_ACCOUNT_ID",
   CF_API_TOKEN = "CF_API_TOKEN",
@@ -42,7 +42,7 @@ enum ConfigEnvVariables {
 }
 
 export interface Configuration {
-  runId: string;
+  batchId: string;
   requestSource: string;
   // CSV of URLs
   urlList: string[];
@@ -85,9 +85,9 @@ export interface Configuration {
 
 export function loadConfig(): Configuration {
   // Run ID is required
-  const runId = process.env[ConfigEnvVariables.RUN_ID];
-  if (!runId) {
-    throw new Error("RUN_ID is required");
+  const batchId = process.env[ConfigEnvVariables.BATCH_ID];
+  if (!batchId) {
+    throw new Error("BATCH_ID is required");
   }
 
   // Request source is required
@@ -189,7 +189,7 @@ export function loadConfig(): Configuration {
   const retryOptions = process.env[ConfigEnvVariables.RETRY_OPTIONS];
 
   return {
-    runId,
+    batchId,
     requestSource,
     urlList,
     webhookUrl,

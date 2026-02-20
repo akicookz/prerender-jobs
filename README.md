@@ -41,7 +41,7 @@ cp .env.sample .env.local
 
 | Variable                 | Required | Default                  | Description                                                                           |
 | ------------------------ | -------- | ------------------------ | ------------------------------------------------------------------------------------- |
-| `RUN_ID`                 | yes      | —                        | Unique identifier for this run, passed through to the webhook payload as `run_id`     |
+| `BATCH_ID`               | yes      | —                        | Unique identifier for this batch, passed through to the webhook payload as `batch_id`  |
 | `REQUEST_SOURCE`         | yes      | —                        | Job trigger identifier (e.g. `scheduler`, `manual`); sent as `source` in the webhook  |
 | `URL_LIST`               | yes      | —                        | Comma-separated list of URLs to prerender (all must share the same hostname)          |
 | `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                                 |
@@ -124,7 +124,7 @@ On completion the job sends a JSON summary via Telegram (if configured) and/or P
 
 ```jsonc
 {
-  "run_id": "RUN_ID", // value of the RUN_ID env var
+  "batch_id": "BATCH_ID", // value of the BATCH_ID env var
   "source": "scheduler", // value of the REQUEST_SOURCE env var
   "google_cloud_execution_id": "abc123", // Cloud Run execution ID, or "local"
   "domain": "example.com",
