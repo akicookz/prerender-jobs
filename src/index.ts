@@ -88,7 +88,7 @@ async function reportResult({
   failedToSyncUrls: string[];
 }): Promise<void> {
   const resultBody = {
-    run_id: startedAt,
+    run_id: config.runId,
     google_cloud_execution_id: process.env.CLOUD_RUN_EXECUTION ?? "local",
     domain,
     urls_rendered: countRendered,
@@ -100,14 +100,15 @@ async function reportResult({
     finished_at: completedAt,
     failed: {
       failed_to_render: {
-        urls: failedToRenderUrls,
+        paths: failedToRenderUrls.map((url) => extractPathFromUrl(url)),
         count: failedToRenderUrls.length,
       },
       failed_to_sync: {
-        urls: failedToSyncUrls,
+        paths: failedToSyncUrls.map((url) => extractPathFromUrl(url)),
         count: failedToSyncUrls.length,
       },
     },
+    retry_options: config.retryOptions,
   };
   if (config.telegramBotToken && config.telegramChatId) {
     logger.info(`Sending result to Telegram chat: ${config.telegramChatId}`);

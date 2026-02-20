@@ -16,6 +16,7 @@ export enum LastmodFilter {
 
 enum ConfigEnvVariables {
   // REQUIRED
+  RUN_ID = "RUN_ID",
   URL_LIST = "URL_LIST",
   CF_ACCOUNT_ID = "CF_ACCOUNT_ID",
   CF_API_TOKEN = "CF_API_TOKEN",
@@ -36,9 +37,11 @@ enum ConfigEnvVariables {
   SKIP_SITEMAP_PARSING = "SKIP_SITEMAP_PARSING",
   TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN",
   TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID",
+  RETRY_OPTIONS = "RETRY_OPTIONS",
 }
 
 export interface Configuration {
+  runId: string;
   // CSV of URLs
   urlList: string[];
   // Callback URL on completion
@@ -75,9 +78,16 @@ export interface Configuration {
   telegramBotToken?: string;
   // Telegram chat ID
   telegramChatId?: string;
+  retryOptions?: string;
 }
 
 export function loadConfig(): Configuration {
+  // Run ID is required
+  const runId = process.env[ConfigEnvVariables.RUN_ID];
+  if (!runId) {
+    throw new Error("RUN_ID is required");
+  }
+
   // URL list is required
   const urlListRaw = process.env[ConfigEnvVariables.URL_LIST] ?? "";
   const urlList = urlListRaw.split(",").map((item) => item.trim());
@@ -167,7 +177,11 @@ export function loadConfig(): Configuration {
     ? skipSitemapParsingRaw === "true"
     : false;
 
+  // Retry options are optional
+  const retryOptions = process.env[ConfigEnvVariables.RETRY_OPTIONS];
+
   return {
+    runId,
     urlList,
     webhookUrl,
     webhookSignature,
@@ -186,5 +200,6 @@ export function loadConfig(): Configuration {
     skipSitemapParsing,
     telegramBotToken,
     telegramChatId,
+    retryOptions,
   };
 }
