@@ -41,6 +41,8 @@ cp .env.sample .env.local
 
 | Variable                 | Required | Default                  | Description                                                                           |
 | ------------------------ | -------- | ------------------------ | ------------------------------------------------------------------------------------- |
+| `BATCH_ID`               | yes      | —                        | Unique identifier for this batch, passed through to the webhook payload as `batch_id`  |
+| `REQUEST_SOURCE`         | yes      | —                        | Job trigger identifier (e.g. `scheduler`, `manual`); sent as `source` in the webhook  |
 | `URL_LIST`               | yes      | —                        | Comma-separated list of URLs to prerender (all must share the same hostname)          |
 | `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                                 |
 | `CF_API_TOKEN`           | yes      | —                        | Cloudflare API token (KV write access)                                                |
@@ -48,6 +50,7 @@ cp .env.sample .env.local
 | `R2_SECRET_ACCESS_KEY`   | yes      | —                        | R2 S3-compatible secret key                                                           |
 | `R2_BUCKET_NAME`         | yes      | —                        | Target R2 bucket name                                                                 |
 | `KV_NAMESPACE_ID`        | yes      | —                        | KV namespace ID for the cache index                                                   |
+| `RETRY_OPTIONS`          | no       | —                        | JSON string forwarded as `retry_options` in the webhook for downstream retry handling  |
 | `SITEMAP_URL`            | no       | `<hostname>/sitemap.xml` | Explicit sitemap URL                                                                  |
 | `SITEMAP_UPDATED_WITHIN` | no       | `all`                    | Filter sitemap URLs by lastmod: `1d`, `3d`, `7d`, `30d`, `all`                        |
 | `CACHE_TTL`              | no       | `604800` (7 days)        | Cache TTL in seconds                                                                  |
@@ -121,7 +124,8 @@ On completion the job sends a JSON summary via Telegram (if configured) and/or P
 
 ```jsonc
 {
-  "run_id": 1234567890, // epoch ms when the job started
+  "batch_id": "BATCH_ID", // value of the BATCH_ID env var
+  "source": "scheduler", // value of the REQUEST_SOURCE env var
   "google_cloud_execution_id": "abc123", // Cloud Run execution ID, or "local"
   "domain": "example.com",
   "urls_rendered": 42,
@@ -132,10 +136,12 @@ On completion the job sends a JSON summary via Telegram (if configured) and/or P
   "started_at": 1234567890,
   "finished_at": 1234567899,
   "failed": {
-    "failed_to_render": { "urls": [], "count": 0 },
-    "failed_to_sync": { "urls": [], "count": 0 },
+    "failed_to_render": { "paths": [], "count": 0 }, // URL paths (not full URLs)
+    "failed_to_sync": { "paths": [], "count": 0 },   // URL paths (not full URLs)
   },
   "success_paths": ["/", "/about", "/blog/post-1"], // paths fully rendered and synced to R2 + KV
+  // present only when RETRY_OPTIONS is set:
+  "retry_options": { /* parsed from RETRY_OPTIONS env var */ },
 }
 ```
 

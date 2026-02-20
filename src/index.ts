@@ -87,8 +87,9 @@ async function reportResult({
   failedToRenderUrls: string[];
   failedToSyncUrls: string[];
 }): Promise<void> {
-  const resultBody = {
-    run_id: startedAt,
+  const resultBody: Record<string, unknown> = {
+    batch_id: config.batchId,
+    source: config.requestSource,
     google_cloud_execution_id: process.env.CLOUD_RUN_EXECUTION ?? "local",
     domain,
     urls_rendered: countRendered,
@@ -100,15 +101,27 @@ async function reportResult({
     finished_at: completedAt,
     failed: {
       failed_to_render: {
-        urls: failedToRenderUrls,
+        paths: failedToRenderUrls.map((url) => extractPathFromUrl(url)),
         count: failedToRenderUrls.length,
       },
       failed_to_sync: {
-        urls: failedToSyncUrls,
+        paths: failedToSyncUrls.map((url) => extractPathFromUrl(url)),
         count: failedToSyncUrls.length,
       },
     },
   };
+  if (config.retryOptions) {
+    try {
+      resultBody.retry_options = JSON.parse(config.retryOptions) as Record<
+        string,
+        unknown
+      >;
+    } catch (e) {
+      logger.error(
+        `Failed to parse retry options: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
   if (config.telegramBotToken && config.telegramChatId) {
     logger.info(`Sending result to Telegram chat: ${config.telegramChatId}`);
     const telegramBot = new TelegramBot(config.telegramBotToken);

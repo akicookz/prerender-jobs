@@ -16,6 +16,7 @@ export enum LastmodFilter {
 
 enum ConfigEnvVariables {
   // REQUIRED
+  BATCH_ID = "BATCH_ID",
   URL_LIST = "URL_LIST",
   CF_ACCOUNT_ID = "CF_ACCOUNT_ID",
   CF_API_TOKEN = "CF_API_TOKEN",
@@ -36,9 +37,13 @@ enum ConfigEnvVariables {
   SKIP_SITEMAP_PARSING = "SKIP_SITEMAP_PARSING",
   TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN",
   TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID",
+  RETRY_OPTIONS = "RETRY_OPTIONS",
+  REQUEST_SOURCE = "REQUEST_SOURCE",
 }
 
 export interface Configuration {
+  batchId: string;
+  requestSource: string;
   // CSV of URLs
   urlList: string[];
   // Callback URL on completion
@@ -75,9 +80,22 @@ export interface Configuration {
   telegramBotToken?: string;
   // Telegram chat ID
   telegramChatId?: string;
+  retryOptions?: string;
 }
 
 export function loadConfig(): Configuration {
+  // Run ID is required
+  const batchId = process.env[ConfigEnvVariables.BATCH_ID];
+  if (!batchId) {
+    throw new Error("BATCH_ID is required");
+  }
+
+  // Request source is required
+  const requestSource = process.env[ConfigEnvVariables.REQUEST_SOURCE];
+  if (!requestSource) {
+    throw new Error("REQUEST_SOURCE is required");
+  }
+
   // URL list is required
   const urlListRaw = process.env[ConfigEnvVariables.URL_LIST] ?? "";
   const urlList = urlListRaw.split(",").map((item) => item.trim());
@@ -167,7 +185,12 @@ export function loadConfig(): Configuration {
     ? skipSitemapParsingRaw === "true"
     : false;
 
+  // Retry options are optional
+  const retryOptions = process.env[ConfigEnvVariables.RETRY_OPTIONS];
+
   return {
+    batchId,
+    requestSource,
     urlList,
     webhookUrl,
     webhookSignature,
@@ -186,5 +209,6 @@ export function loadConfig(): Configuration {
     skipSitemapParsing,
     telegramBotToken,
     telegramChatId,
+    retryOptions,
   };
 }
