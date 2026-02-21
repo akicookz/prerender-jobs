@@ -88,9 +88,7 @@ export class CacheManager {
         kvRecord,
       });
     } catch (e) {
-      this._logger.error(
-        `Failed to upload R2 object: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      this._logger.error(`Failed to upload R2 object: ${String(e)}`);
       return {
         kvSynced: false,
         r2Synced: false,
@@ -107,9 +105,7 @@ export class CacheManager {
         objectKey,
       });
     } catch (e) {
-      this._logger.error(
-        `Failed to invalidate stale R2 object: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      this._logger.error(`Failed to invalidate stale R2 object: ${String(e)}`);
     }
 
     try {
