@@ -87,7 +87,33 @@ async function reportResult({
   failedToRenderUrls: string[];
   failedToSyncUrls: string[];
 }): Promise<void> {
-  const resultBody: Record<string, unknown> = {
+  const resultBody: {
+    batch_id: string;
+    source: string;
+    google_cloud_execution_id: string;
+    domain: string;
+    urls_rendered: number;
+    urls_synced_r2: number;
+    urls_synced_kv: number;
+    sitemap_url: string;
+    sitemap_filter: string;
+    started_at: number;
+    finished_at: number;
+    failed: {
+      failed_to_render: {
+        paths: string[];
+        count: number;
+      };
+      failed_to_sync: {
+        paths: string[];
+        count: number;
+      };
+    };
+    retry_options?: {
+      parent_batch_group_ids: string[];
+      retry_count: number;
+    };
+  } = {
     batch_id: config.batchId,
     source: config.requestSource,
     google_cloud_execution_id: process.env.CLOUD_RUN_EXECUTION ?? "local",
@@ -112,17 +138,27 @@ async function reportResult({
   };
   if (config.retryOptions) {
     try {
-      resultBody.retry_options = JSON.parse(config.retryOptions) as Record<
-        string,
-        unknown
-      >;
+      resultBody.retry_options = JSON.parse(config.retryOptions) as {
+        parent_batch_group_ids: string[];
+        retry_count: number;
+      };
     } catch (e) {
       logger.error(
         `Failed to parse retry options: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
   }
-  if (config.telegramBotToken && config.telegramChatId) {
+  const isRetryRun =
+    resultBody.retry_options?.retry_count &&
+    resultBody.retry_options.retry_count > 0;
+  const hasFailedCases =
+    failedToRenderUrls.length > 0 || failedToSyncUrls.length > 0;
+  const shouldSendToTelegram = hasFailedCases || isRetryRun;
+  if (
+    config.telegramBotToken &&
+    config.telegramChatId &&
+    shouldSendToTelegram
+  ) {
     logger.info(`Sending result to Telegram chat: ${config.telegramChatId}`);
     const telegramBot = new TelegramBot(config.telegramBotToken);
     try {
@@ -165,6 +201,8 @@ async function reportResult({
       );
     }
   }
+
+  logger.info(`Batch result: ${JSON.stringify(resultBody, null, 2)}`);
 }
 
 async function launchBrowser(): Promise<Browser> {
