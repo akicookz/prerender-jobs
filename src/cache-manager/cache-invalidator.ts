@@ -1,8 +1,4 @@
-import {
-  DeleteObjectCommand,
-  DeleteObjectsCommand,
-  S3Client,
-} from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, S3Client } from "@aws-sdk/client-s3";
 import Cloudflare from "cloudflare";
 import { AppLogger, INDENT } from "../logger";
 import { KvRecord } from "./type";
