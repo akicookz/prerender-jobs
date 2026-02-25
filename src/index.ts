@@ -1,23 +1,59 @@
 import { uniq } from "es-toolkit";
+import * as TelegramBot from "node-telegram-bot-api";
 import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
 import { getDomain, getHostname } from "tldts";
-import { CacheManager } from "./cache-manager/index";
+import { R2Loader } from "./cache-manager/r2-loader";
 import { loadConfig, type Configuration } from "./load-config";
 import { AppLogger, INDENT } from "./logger";
 import { RenderEngine, type RenderResult } from "./render-engine";
 import { SeoAnalyzer } from "./seo-analyzer/index";
 import type { PageSeoAnalysis } from "./seo-analyzer/type";
 import { SitemapParser } from "./sitemap-parser";
-import { extractPathFromUrl } from "./util";
-import * as TelegramBot from "node-telegram-bot-api";
+import { extractPathFromUrl, sleep } from "./util";
+import { KvRecord } from "./cache-manager/type";
+import { CacheInvalidator } from "./cache-manager/cache-invalidator";
+import { buildKvKey } from "./cache-manager/kv-key-utils";
+import { KvLoader } from "./cache-manager/kv-loader";
 
 interface PipelineResult {
   url: string;
   isRendered: boolean;
   isAnalyzed: boolean;
   isCachedToR2: boolean;
-  isCachedToKV: boolean;
+  isCachedToKv: boolean;
+  payloadForKv?: {
+    kvRecord: KvRecord;
+    objectKey: string;
+  };
+}
+
+interface ReportResultBody {
+  batch_id: string;
+  source: string;
+  google_cloud_execution_id: string;
+  domain: string;
+  urls_rendered: number;
+  urls_synced_r2: number;
+  urls_synced_kv: number;
+  sitemap_url: string;
+  sitemap_filter: string;
+  started_at: number;
+  finished_at: number;
+  failed: {
+    failed_to_render: {
+      paths: string[];
+      count: number;
+    };
+    failed_to_sync: {
+      paths: string[];
+      count: number;
+    };
+  };
+  retry_options?: {
+    parent_batch_group_ids: string[];
+    retry_count: number;
+  };
 }
 
 const logger = AppLogger.register({ prefix: "index" });
@@ -62,58 +98,67 @@ async function prepareTargetUrls({
 
 async function reportResult({
   config,
+  urlResultMap,
   domain,
-  successUrls,
-  countRendered,
-  countKvSynced,
-  countR2Synced,
   sitemapUrl,
   sitemapFilter,
   startedAt,
   completedAt,
-  failedToRenderUrls,
-  failedToSyncUrls,
 }: {
   config: Configuration;
+  urlResultMap: Map<string, PipelineResult>;
   domain: string;
-  successUrls: string[];
-  countRendered: number;
-  countKvSynced: number;
-  countR2Synced: number;
   sitemapUrl: string;
   sitemapFilter: string;
   startedAt: number;
   completedAt: number;
-  failedToRenderUrls: string[];
-  failedToSyncUrls: string[];
 }): Promise<void> {
-  const resultBody: {
-    batch_id: string;
-    source: string;
-    google_cloud_execution_id: string;
-    domain: string;
-    urls_rendered: number;
-    urls_synced_r2: number;
-    urls_synced_kv: number;
-    sitemap_url: string;
-    sitemap_filter: string;
-    started_at: number;
-    finished_at: number;
-    failed: {
-      failed_to_render: {
-        paths: string[];
-        count: number;
-      };
-      failed_to_sync: {
-        paths: string[];
-        count: number;
-      };
-    };
-    retry_options?: {
-      parent_batch_group_ids: string[];
-      retry_count: number;
-    };
-  } = {
+  const {
+    successUrls,
+    countRendered,
+    countKvSynced,
+    countR2Synced,
+    failedToRenderUrls,
+    failedToSyncUrls,
+  } = urlResultMap.values().reduce<{
+    successUrls: string[];
+    countRendered: number;
+    countKvSynced: number;
+    countR2Synced: number;
+    failedToRenderUrls: string[];
+    failedToSyncUrls: string[];
+  }>(
+    (acc, result) => {
+      if (result.isRendered) {
+        acc.countRendered++;
+      }
+      if (result.isCachedToKv) {
+        acc.countKvSynced++;
+      }
+      if (result.isCachedToR2) {
+        acc.countR2Synced++;
+      }
+      if (!result.isRendered) {
+        acc.failedToRenderUrls.push(result.url);
+      }
+      if (!result.isCachedToKv || !result.isCachedToR2) {
+        acc.failedToSyncUrls.push(result.url);
+      }
+      if (result.isRendered && result.isCachedToKv && result.isCachedToR2) {
+        acc.successUrls.push(result.url);
+      }
+      return acc;
+    },
+    {
+      successUrls: [],
+      countRendered: 0,
+      countKvSynced: 0,
+      countR2Synced: 0,
+      failedToRenderUrls: [],
+      failedToSyncUrls: [],
+    },
+  );
+  const resultBody: ReportResultBody = {
     batch_id: config.batchId,
     source: config.requestSource,
     google_cloud_execution_id: process.env.CLOUD_RUN_EXECUTION ?? "local",
@@ -136,6 +181,9 @@ async function reportResult({
       },
     },
   };
+
+  logger.info(`Batch result: ${JSON.stringify(resultBody, null, 2)}`);
+
   if (config.retryOptions) {
     try {
       resultBody.retry_options = JSON.parse(config.retryOptions) as {
@@ -161,10 +209,29 @@ async function reportResult({
   ) {
     logger.info(`Sending result to Telegram chat: ${config.telegramChatId}`);
     const telegramBot = new TelegramBot(config.telegramBotToken);
+    const resultBodyForTelegram = structuredClone(resultBody);
+    const allFailedToRenderPaths =
+      resultBodyForTelegram.failed.failed_to_render.paths;
+    if (allFailedToRenderPaths.length > 50) {
+      resultBodyForTelegram.failed.failed_to_render.paths =
+        allFailedToRenderPaths.slice(0, 50);
+      resultBodyForTelegram.failed.failed_to_render.paths.push(
+        `...${allFailedToRenderPaths.length - 50} more`,
+      );
+    }
+    const allFailedToSyncPaths =
+      resultBodyForTelegram.failed.failed_to_sync.paths;
+    if (allFailedToSyncPaths.length > 50) {
+      resultBodyForTelegram.failed.failed_to_sync.paths =
+        allFailedToSyncPaths.slice(0, 50);
+      resultBodyForTelegram.failed.failed_to_sync.paths.push(
+        `...${allFailedToSyncPaths.length - 50} more`,
+      );
+    }
     try {
       await telegramBot.sendMessage(
         config.telegramChatId,
-        `\`\`\`json\n${JSON.stringify(resultBody, null, 2).slice(
+        `\`\`\`json\n${JSON.stringify(resultBodyForTelegram, null, 2).slice(
           0,
           4096,
         )}\n\`\`\``, // Telegram message length limit is 4096 characters
@@ -204,8 +271,6 @@ async function reportResult({
       );
     }
   }
-
-  logger.info(`Batch result: ${JSON.stringify(resultBody, null, 2)}`);
 }
 
 async function launchBrowser(): Promise<Browser> {
@@ -241,7 +306,7 @@ async function runPipeline({
     isRendered: false,
     isAnalyzed: false,
     isCachedToR2: false,
-    isCachedToKV: false,
+    isCachedToKv: false,
   };
   logger.info(`[${pipelineNumber}] Processing ${urlToRender}`);
   const renderer = RenderEngine.register({
@@ -285,31 +350,34 @@ async function runPipeline({
     return result;
   }
 
-  const cacheManager = CacheManager.register({
+  // Upload snapshot to R2
+  const r2Loader = R2Loader.register({
     targetUrl: renderResult.finalUrl,
     html: renderResult.html,
     seoAnalysis: seoAnalysisResult,
     userAgent: config.userAgent,
-    cacheConfig: {
-      cacheTtl: config.cacheTtl,
+    r2CacheConfig: {
       cfAccountId: config.cfAccountId,
-      cfApiToken: config.cfApiToken,
       r2AccessKeyId: config.r2AccessKeyId,
       r2SecretAccessKey: config.r2SecretAccessKey,
       r2BucketName: config.r2BucketName,
-      kvNamespaceId: config.kvNamespaceId,
+      cacheTtl: config.cacheTtl,
     },
   });
-  const { kvSynced, r2Synced } = await cacheManager.uploadCache();
-  result.isCachedToR2 = r2Synced;
-  result.isCachedToKV = kvSynced;
-  if (!kvSynced || !r2Synced) {
+  const r2UploadResult = await r2Loader.uploadR2Object();
+  result.isCachedToR2 = r2UploadResult.r2Synced;
+
+  if (!r2UploadResult.r2Synced) {
     logger.error(
-      `${INDENT}${INDENT}↳ ${path} - caching failed: kvSynced: ${kvSynced}, r2Synced: ${r2Synced}`,
+      `${INDENT}${INDENT}↳ ${path} - uploading snapshot to R2 failed`,
     );
     return result;
   }
-  logger.info(`${INDENT}${INDENT}↳ ${path} - caching completed`);
+  result.payloadForKv = {
+    kvRecord: r2UploadResult.kvRecord,
+    objectKey: r2UploadResult.objectKey,
+  };
+  logger.info(`${INDENT}${INDENT}↳ ${path} - snapshot uploaded to R2`);
   return result;
 }
 
@@ -323,14 +391,7 @@ async function runPipelineBatches({
   browser: Browser;
   config: Configuration;
   urlsToRender: string[];
-}): Promise<{
-  countRendered: number;
-  countKvSynced: number;
-  countR2Synced: number;
-  successUrls: string[];
-  failedToRenderUrls: string[];
-  failedToSyncUrls: string[];
-}> {
+}): Promise<Map<string, PipelineResult>> {
   const pipelineResults: PipelineResult[] = [];
   const totalNumberOfBatches = Math.ceil(urlsToRender.length / concurrency);
   logger.info(`Running pipeline batches with concurrency: ${concurrency}`);
@@ -358,24 +419,91 @@ async function runPipelineBatches({
     processedCount += batchUrls.length;
   }
 
+  const resultMap = new Map<string, PipelineResult>();
+  pipelineResults.forEach((result) => {
+    resultMap.set(result.url, result);
+  });
+
+  return resultMap;
+}
+
+async function bulkUpdateKv({
+  kvPairInfoMap,
+  config,
+}: {
+  kvPairInfoMap: Map<
+    string, // kv key
+    {
+      url: string;
+      kvPair: { key: string; value: string; expiration_ttl: number };
+    }
+  >;
+  config: Configuration;
+}): Promise<{
+  successfulKeyCount: number;
+  succeededUrls: string[];
+  unsuccessfulUrls: string[];
+}> {
+  let finalSuccessfulKeyCount = 0;
+  let finalUnsuccessfulKeys = [];
+  const kvLoader = KvLoader.register({
+    kvConfig: {
+      cfAccountId: config.cfAccountId,
+      cfApiToken: config.cfApiToken,
+      kvNamespaceId: config.kvNamespaceId,
+    },
+  });
+  const targetKvPairs = Array.from(kvPairInfoMap.values()).map(
+    ({ kvPair }) => kvPair,
+  );
+  const kvUploadResult = await kvLoader.uploadKvRecords({
+    kvPairs: targetKvPairs,
+  });
+
+  finalSuccessfulKeyCount = kvUploadResult.successfulKeyCount;
+  finalUnsuccessfulKeys = kvUploadResult.unsuccessfulKeys;
+
+  // retry after 10 seconds if unsuccessful
+  if (kvUploadResult.unsuccessfulKeys.length > 0) {
+    logger.info(
+      `Failed to upload ${kvUploadResult.unsuccessfulKeys.length} KV records. Retrying after 10 seconds ...`,
+    );
+    const kvPairsToRetry = [];
+    for (const key of kvUploadResult.unsuccessfulKeys) {
+      const kvPairInfo = kvPairInfoMap.get(key);
+      if (kvPairInfo) {
+        kvPairsToRetry.push(kvPairInfo.kvPair);
+      }
+    }
+    await sleep(10000);
+    const retryKvUploadResult = await kvLoader.uploadKvRecords({
+      kvPairs: kvPairsToRetry,
+    });
+    finalSuccessfulKeyCount += retryKvUploadResult.successfulKeyCount;
+    finalUnsuccessfulKeys = retryKvUploadResult.unsuccessfulKeys;
+  }
+
+  const succeededUrls = [];
+  const unsuccessfulUrls = [];
+  for (const [key, kvPairInfo] of kvPairInfoMap.entries()) {
+    if (finalUnsuccessfulKeys.includes(key)) {
+      unsuccessfulUrls.push(kvPairInfo.url);
+    } else {
+      succeededUrls.push(kvPairInfo.url);
+    }
+  }
+  if (unsuccessfulUrls.length > 0) {
+    logger.error(`KV sync failed for following paths:`);
+    unsuccessfulUrls.forEach((url) => {
+      logger.error(`${INDENT}${INDENT}↳ ${url}`);
+    });
+  } else {
+    logger.info(`KV sync completed successfully`);
+  }
   return {
-    countRendered: pipelineResults.filter((result) => result.isRendered).length,
-    countKvSynced: pipelineResults.filter((result) => result.isCachedToKV)
-      .length,
-    countR2Synced: pipelineResults.filter((result) => result.isCachedToR2)
-      .length,
-    successUrls: pipelineResults
-      .filter(
-        (result) =>
-          result.isRendered && result.isCachedToR2 && result.isCachedToKV,
-      )
-      .map((result) => result.url),
-    failedToRenderUrls: pipelineResults
-      .filter((result) => !result.isRendered)
-      .map((result) => result.url),
-    failedToSyncUrls: pipelineResults
-      .filter((result) => !result.isCachedToR2 || !result.isCachedToKV)
-      .map((result) => result.url),
+    successfulKeyCount: finalSuccessfulKeyCount,
+    succeededUrls,
+    unsuccessfulUrls,
   };
 }
 
@@ -399,32 +527,81 @@ async function main({ config }: { config: Configuration }): Promise<void> {
   const browser = await launchBrowser();
 
   // STEP 3 : Run the pipeline batches
-  const {
-    countRendered,
-    countKvSynced,
-    countR2Synced,
-    successUrls,
-    failedToRenderUrls,
-    failedToSyncUrls,
-  } = await runPipelineBatches({
+  const urlResultMap = await runPipelineBatches({
     concurrency: config.concurrency,
     browser,
     urlsToRender,
     config,
   });
 
+  if (config.skipCacheSync) {
+    logger.info(`SKIPPING KV UPLOAD: SKIP_CACHE_SYNC is true`);
+  } else {
+    const kvPairInfoMap = new Map<
+      string, // kv key
+      {
+        url: string;
+        kvPair: { key: string; value: string; expiration_ttl: number };
+      }
+    >();
+    const objectKeyMap = new Map<string, string>();
+    urlResultMap.forEach((result) => {
+      if (result.payloadForKv) {
+        const kvKey = buildKvKey({ targetUrl: result.url });
+        kvPairInfoMap.set(kvKey, {
+          url: result.url,
+          kvPair: {
+            key: kvKey,
+            value: JSON.stringify(result.payloadForKv.kvRecord),
+            expiration_ttl: config.cacheTtl,
+          },
+        });
+        objectKeyMap.set(kvKey, result.payloadForKv.objectKey);
+      }
+    });
+
+    // STEP 4 : Invalidate stale R2 objects
+    const cacheInvalidator = CacheInvalidator.register({
+      cacheConfig: {
+        cfAccountId: config.cfAccountId,
+        cfApiToken: config.cfApiToken,
+        r2AccessKeyId: config.r2AccessKeyId,
+        r2SecretAccessKey: config.r2SecretAccessKey,
+        r2BucketName: config.r2BucketName,
+        kvNamespaceId: config.kvNamespaceId,
+      },
+    });
+    await cacheInvalidator.invalidateMultipleStaleR2Objects({
+      kvKeyObjectKeyMap: objectKeyMap,
+    });
+
+    // STEP 5 : Upload KV records (URL meta)
+    const { succeededUrls, unsuccessfulUrls } = await bulkUpdateKv({
+      kvPairInfoMap,
+      config,
+    });
+    for (const url of succeededUrls) {
+      const result = urlResultMap.get(url);
+      if (result) {
+        result.isCachedToKv = true;
+      }
+    }
+    for (const url of unsuccessfulUrls) {
+      const result = urlResultMap.get(url);
+      if (result) {
+        result.isCachedToKv = false;
+      }
+    }
+  }
+
   const completedAt = Date.now();
 
   // STEP 5 : Report result
   const domain = getDomain(urlsToRender[0]!);
+
   await reportResult({
     config,
-    successUrls,
-    countRendered,
-    countKvSynced,
-    countR2Synced,
-    failedToRenderUrls,
-    failedToSyncUrls,
+    urlResultMap,
     domain: domain!,
     sitemapUrl,
     sitemapFilter: config.skipSitemapParsing
