@@ -164,7 +164,10 @@ async function reportResult({
     try {
       await telegramBot.sendMessage(
         config.telegramChatId,
-        `\`\`\`json\n${JSON.stringify(resultBody, null, 2)}\n\`\`\``,
+        `\`\`\`json\n${JSON.stringify(resultBody, null, 2)}\n\`\`\``.slice(
+          0,
+          4096,
+        ), // Telegram message length limit is 4096 characters
         {
           parse_mode: "MarkdownV2",
         },
