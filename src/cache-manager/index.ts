@@ -1,5 +1,4 @@
 import { AppLogger } from "../logger";
-import normalizeUrl from "normalize-url";
 import type { CacheConfig, KvRecord } from "./type";
 import { DateTime } from "luxon";
 import Cloudflare, { APIError } from "cloudflare";
@@ -282,7 +281,7 @@ export class CacheManager {
   private buildKvKey({ url }: { url: URL }): string {
     // Strip protocol and www, use only domain + path + query
     const hostname = url.hostname;
-    const domain = normalizeUrl(hostname);
+    const domain = this.normalizeDomain({ domain: hostname });
     const canonical = this.canonicalizePathForKey({ url });
     return `to_html:${CACHE_VERSION}:${domain}:${canonical}`;
   }
@@ -334,5 +333,22 @@ export class CacheManager {
       hex += h;
     }
     return hex;
+  }
+
+  private normalizeDomain({ domain }: { domain: string }): string {
+    const normalizedDomain = domain
+      .toLowerCase()
+      .trim()
+      .replace(/^http(s)?:\/\//, "")
+      .replace(/^www\./, "")
+      .replace(/\/$/, "");
+
+    const hasTrailingSlash = normalizedDomain.at(-1) === "/";
+
+    if (hasTrailingSlash) {
+      return normalizedDomain.slice(0, -1);
+    }
+
+    return normalizedDomain;
   }
 }
