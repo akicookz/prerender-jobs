@@ -9,3 +9,7 @@ export function extractPathFromUrl(url: string): string {
   const urlObj = new URL(url);
   return urlObj.pathname;
 }
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
