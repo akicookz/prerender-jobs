@@ -16,7 +16,7 @@ export function buildKvKey({ targetUrl }: { targetUrl: string }): string {
   return `to_html:${CACHE_VERSION}:${domain}:${canonical}`;
 }
 
-function normalizeDomain({ domain }: { domain: string }): string {
+export function normalizeDomain({ domain }: { domain: string }): string {
   const normalizedDomain = domain
     .toLowerCase()
     .trim()

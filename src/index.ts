@@ -5,7 +5,7 @@ import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { CacheInvalidator } from "./cache-manager/cache-invalidator";
-import { buildKvKey } from "./cache-manager/kv-key-utils";
+import { buildKvKey, normalizeDomain } from "./cache-manager/kv-key-utils";
 import { KvLoader } from "./cache-manager/kv-loader";
 import { R2Loader } from "./cache-manager/r2-loader";
 import { KvRecord } from "./cache-manager/type";
@@ -598,12 +598,12 @@ async function main({ config }: { config: Configuration }): Promise<void> {
   const completedAt = Date.now();
 
   // STEP 5 : Report result
-  const domain = getHostname(urlsToRender[0]!);
+  const domain = normalizeDomain({ domain: getHostname(urlsToRender[0]!)! });
 
   await reportResult({
     config,
     urlResultMap,
-    domain: domain!,
+    domain,
     sitemapUrl,
     sitemapFilter: config.skipSitemapParsing
       ? "skipped"
