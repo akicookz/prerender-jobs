@@ -1,4 +1,4 @@
-import { Browser, HTTPRequest, Page } from "puppeteer-core";
+import { Browser, ConsoleMessage, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { AppLogger } from "./logger";
 
@@ -46,6 +46,56 @@ export class RenderEngine {
 
   async renderPage(): Promise<RenderResult> {
     const page = await this._browser.newPage();
+
+    // Set up page event listeners for debugging (filtered to reduce noise)
+    try {
+      page.on("console", (msg: ConsoleMessage) => {
+        try {
+          const text = msg.text();
+          // Skip noisy warnings about preload/crossorigin mismatches
+          if (text.includes("preload") && text.includes("crossorigin")) return;
+          // Only log errors, not warnings/info
+          if (msg.type() === "error") {
+            this._logger.debug("[PageConsole]", msg.type(), text);
+          }
+        } catch {
+          // ignore
+        }
+      });
+      page.on("pageerror", (err: unknown) => {
+        if (err instanceof Error) {
+          try {
+            this._logger.debug("[PageError]", err?.message || err);
+          } catch {
+            // ignore
+          }
+        }
+      });
+      page.on("requestfailed", (req: HTTPRequest) => {
+        try {
+          const errorText = req.failure()?.errorText || "";
+          // Skip non-critical failures (fonts, ORB blocks, analytics)
+          if (
+            errorText.includes("ERR_BLOCKED_BY_ORB") ||
+            errorText.includes("ERR_ABORTED") ||
+            req.url().includes("fonts.googleapis.com") ||
+            req.url().includes("fonts.gstatic.com") ||
+            req.url().includes("analytics") ||
+            req.url().includes("gtag")
+          ) {
+            return;
+          }
+          this._logger.debug("[RequestFailed]", req.url(), errorText);
+        } catch {
+          // ignore
+        }
+      });
+    } catch (e) {
+      this._logger.debug(
+        "[Prerender] Failed to attach page event listeners",
+        e,
+      );
+    }
 
     try {
       await page.setUserAgent({ userAgent: this._userAgent });
