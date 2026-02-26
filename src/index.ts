@@ -1,9 +1,14 @@
 import { uniq } from "es-toolkit";
+import { DateTime } from "luxon";
 import * as TelegramBot from "node-telegram-bot-api";
 import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
-import { getDomain, getHostname } from "tldts";
+import { getHostname } from "tldts";
+import { CacheInvalidator } from "./cache-manager/cache-invalidator";
+import { buildKvKey } from "./cache-manager/kv-key-utils";
+import { KvLoader } from "./cache-manager/kv-loader";
 import { R2Loader } from "./cache-manager/r2-loader";
+import { KvRecord } from "./cache-manager/type";
 import { loadConfig, type Configuration } from "./load-config";
 import { AppLogger, INDENT } from "./logger";
 import { RenderEngine, type RenderResult } from "./render-engine";
@@ -11,10 +16,6 @@ import { SeoAnalyzer } from "./seo-analyzer/index";
 import type { PageSeoAnalysis } from "./seo-analyzer/type";
 import { SitemapParser } from "./sitemap-parser";
 import { extractPathFromUrl, sleep } from "./util";
-import { KvRecord } from "./cache-manager/type";
-import { CacheInvalidator } from "./cache-manager/cache-invalidator";
-import { buildKvKey } from "./cache-manager/kv-key-utils";
-import { KvLoader } from "./cache-manager/kv-loader";
 
 interface PipelineResult {
   url: string;
@@ -38,8 +39,8 @@ interface ReportResultBody {
   urls_synced_kv: number;
   sitemap_url: string;
   sitemap_filter: string;
-  started_at: number;
-  finished_at: number;
+  started_at: string;
+  finished_at: string;
   failed: {
     failed_to_render: {
       paths: string[];
@@ -168,8 +169,8 @@ async function reportResult({
     urls_synced_kv: countKvSynced,
     sitemap_url: sitemapUrl,
     sitemap_filter: sitemapFilter,
-    started_at: startedAt,
-    finished_at: completedAt,
+    started_at: DateTime.fromMillis(startedAt).toUTC().toISO()!,
+    finished_at: DateTime.fromMillis(completedAt).toUTC().toISO()!,
     failed: {
       failed_to_render: {
         paths: failedToRenderUrls.map((url) => extractPathFromUrl(url)),
