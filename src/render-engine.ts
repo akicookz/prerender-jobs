@@ -4,6 +4,7 @@ import { AppLogger } from "./logger";
 
 const DEFAULT_RENDER_TIMEOUT = 30000; // 30 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
+const INTERNAL_PRERENDER_PARAM = "to_html";
 
 export interface RenderResult {
   url: string;
@@ -119,7 +120,14 @@ export class RenderEngine {
       const statusCode = response.status();
       const xRobotsTag = response.headers()["x-robots-tag"] ?? null;
       const finalUrl = page.url();
-      return { url: this._url, html, statusCode, xRobotsTag, finalUrl };
+
+      return {
+        url: this._url,
+        html: this.reorderHeadTags(this.cleanInternalParamsFromHtml(html)),
+        statusCode,
+        xRobotsTag,
+        finalUrl,
+      };
     } catch (e) {
       this._logger.error(
         `Failed to render page ${this._url}: ${e instanceof Error ? e.message : String(e)}`,
@@ -412,5 +420,155 @@ export class RenderEngine {
         clearTimeout(pendingTimeout);
       }
     });
+  }
+
+  /**
+   * Remove internal prerender parameters (to_html, cache_invalidate) from URLs
+   * in SEO-critical meta tags (canonical, og:url, etc.) to prevent polluted URLs
+   * from appearing in search results and social shares.
+   */
+  private cleanInternalParamsFromHtml(html: string): string {
+    const paramsToRemove = [INTERNAL_PRERENDER_PARAM, "cache_invalidate"];
+
+    // Helper to clean a URL string
+    const cleanUrl = (urlStr: string): string => {
+      try {
+        const url = new URL(urlStr);
+        let modified = false;
+        for (const param of paramsToRemove) {
+          if (url.searchParams.has(param)) {
+            url.searchParams.delete(param);
+            modified = true;
+          }
+        }
+        return modified ? url.toString() : urlStr;
+      } catch {
+        // Not a valid URL, return as-is
+        return urlStr;
+      }
+    };
+
+    // Clean <link rel="canonical" href="...">
+    html = html.replace(
+      /<link\s+([^>]*rel=["']canonical["'][^>]*)>/gi,
+      (match, attrs) => {
+        if (typeof attrs !== "string") {
+          return match;
+        }
+        const hrefMatch = attrs.match(/href=["']([^"']+)["']/i);
+        if (hrefMatch && hrefMatch[1]) {
+          const cleanedHref = cleanUrl(hrefMatch[1]);
+          if (cleanedHref !== hrefMatch[1]) {
+            return match.replace(hrefMatch[0], `href="${cleanedHref}"`);
+          }
+        }
+        return match;
+      },
+    );
+
+    // Clean <meta property="og:url" content="...">
+    html = html.replace(
+      /<meta\s+([^>]*property=["']og:url["'][^>]*)>/gi,
+      (match, attrs) => {
+        if (typeof attrs !== "string") {
+          return match;
+        }
+        const contentMatch = attrs.match(/content=["']([^"']+)["']/i);
+        if (contentMatch && contentMatch.length > 0) {
+          const cleanedContent = cleanUrl(contentMatch[1]!);
+          if (cleanedContent !== contentMatch[1]) {
+            return match.replace(
+              contentMatch[0],
+              `content="${cleanedContent}"`,
+            );
+          }
+        }
+        return match;
+      },
+    );
+
+    // Clean <meta name="twitter:url" content="..."> (some sites use this)
+    html = html.replace(
+      /<meta\s+([^>]*name=["']twitter:url["'][^>]*)>/gi,
+      (match, attrs) => {
+        if (typeof attrs !== "string") {
+          return match;
+        }
+        const contentMatch = attrs.match(/content=["']([^"']+)["']/i);
+        if (contentMatch && contentMatch.length > 0) {
+          const cleanedContent = cleanUrl(contentMatch[1]!);
+          if (cleanedContent !== contentMatch[1]) {
+            return match.replace(
+              contentMatch[0],
+              `content="${cleanedContent}"`,
+            );
+          }
+        }
+        return match;
+      },
+    );
+
+    return html;
+  }
+
+  /**
+   * Reorder <head> tags so SEO-critical tags appear before scripts and styles.
+   * Uses data-rh="true" attribute that react-helmet-async adds to its tags.
+   * Also handles <title> which helmet may not mark with data-rh.
+   */
+  private reorderHeadTags(html: string): string {
+    const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+    if (!headMatch) return html;
+
+    const headContent = headMatch[1];
+    const headStart = headMatch.index!;
+    const fullHeadTag = headMatch[0];
+
+    // Extract tags to hoist (in order of priority)
+    const hoistPatterns: Array<{ pattern: RegExp; tags: string[] }> = [
+      { pattern: /<meta\s+charset[^>]*>/gi, tags: [] },
+      { pattern: /<meta\s+name="viewport"[^>]*>/gi, tags: [] },
+      { pattern: /<title[^>]*>[\s\S]*?<\/title>/gi, tags: [] },
+      {
+        pattern: /<[^>]+data-rh="true"[^>]*>(?:[\s\S]*?<\/[^>]+>)?/gi,
+        tags: [],
+      },
+    ];
+
+    let remaining = headContent;
+
+    // Extract each pattern's matches
+    for (const item of hoistPatterns) {
+      const matches = remaining?.match(item.pattern);
+      if (matches) {
+        item.tags.push(...matches);
+        for (const match of matches) {
+          remaining = remaining?.replace(match, "");
+        }
+      }
+    }
+
+    // Flatten hoisted tags in priority order
+    const hoistedTags = hoistPatterns.flatMap((item) => item.tags);
+
+    if (hoistedTags.length === 0) return html;
+
+    // Clean up whitespace from removals
+    remaining = remaining?.replace(/\n\s*\n\s*\n/g, "\n").trim();
+
+    // Reconstruct head: hoisted tags first, then remaining content
+    const newHeadContent =
+      "\n    " +
+      hoistedTags.join("\n    ") +
+      (remaining ? "\n    " + remaining : "") +
+      "\n  ";
+
+    const newHead = `<head>${newHeadContent}</head>`;
+
+    return (
+      html.slice(0, headStart) +
+      newHead +
+      html.slice(headStart + fullHeadTag.length)
+    );
   }
 }
