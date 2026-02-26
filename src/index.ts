@@ -597,7 +597,7 @@ async function main({ config }: { config: Configuration }): Promise<void> {
   const completedAt = Date.now();
 
   // STEP 5 : Report result
-  const domain = getDomain(urlsToRender[0]!);
+  const domain = getHostname(urlsToRender[0]!);
 
   await reportResult({
     config,
