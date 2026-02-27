@@ -44,7 +44,7 @@ enum ConfigEnvVariables {
 export interface Configuration {
   batchId: string;
   requestSource: string;
-  // CSV of URLs
+  // JSON array of URLs
   urlList: string[];
   // Callback URL on completion
   webhookUrl?: string;
@@ -98,7 +98,12 @@ export function loadConfig(): Configuration {
 
   // URL list is required
   const urlListRaw = process.env[ConfigEnvVariables.URL_LIST] ?? "";
-  const urlList = urlListRaw.split(",").map((item) => item.trim());
+  let urlList: string[] = [];
+  try {
+    urlList = JSON.parse(urlListRaw) as string[];
+  } catch {
+    throw new Error("URL_LIST must be a valid JSON array");
+  }
   if (urlList.length === 0) {
     throw new Error("URL_LIST is required and must be a non-empty CSV");
   }

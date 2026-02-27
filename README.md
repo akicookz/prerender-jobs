@@ -43,7 +43,7 @@ cp .env.sample .env.local
 | ------------------------ | -------- | ------------------------ | ------------------------------------------------------------------------------------- |
 | `BATCH_ID`               | yes      | —                        | Unique identifier for this batch, passed through to the webhook payload as `batch_id`  |
 | `REQUEST_SOURCE`         | yes      | —                        | Job trigger identifier (e.g. `scheduler`, `manual`); sent as `source` in the webhook  |
-| `URL_LIST`               | yes      | —                        | Comma-separated list of URLs to prerender (all must share the same hostname)          |
+| `URL_LIST`               | yes      | —                        | JSON array of URLs to prerender, e.g. `["https://example.com/","https://example.com/about"]` (all must share the same hostname) |
 | `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                                 |
 | `CF_API_TOKEN`           | yes      | —                        | Cloudflare API token (KV write access)                                                |
 | `R2_ACCESS_KEY_ID`       | yes      | —                        | R2 S3-compatible access key                                                           |
