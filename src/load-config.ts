@@ -18,6 +18,8 @@ enum ConfigEnvVariables {
   // REQUIRED
   BATCH_ID = "BATCH_ID",
   URL_LIST = "URL_LIST",
+  DOMAIN = "DOMAIN",
+  ORIGIN_HOST = "ORIGIN_HOST",
   CF_ACCOUNT_ID = "CF_ACCOUNT_ID",
   CF_API_TOKEN = "CF_API_TOKEN",
   R2_ACCESS_KEY_ID = "R2_ACCESS_KEY_ID",
@@ -44,6 +46,10 @@ enum ConfigEnvVariables {
 export interface Configuration {
   batchId: string;
   requestSource: string;
+  // Domain
+  domain: string;
+  // Origin host
+  originHost: string;
   // JSON array of URLs
   urlList: string[];
   // Callback URL on completion
@@ -94,6 +100,18 @@ export function loadConfig(): Configuration {
   const requestSource = process.env[ConfigEnvVariables.REQUEST_SOURCE];
   if (!requestSource) {
     throw new Error("REQUEST_SOURCE is required");
+  }
+
+  // Domain is required
+  const domain = process.env[ConfigEnvVariables.DOMAIN];
+  if (!domain) {
+    throw new Error("DOMAIN is required");
+  }
+
+  // Origin host is required
+  const originHost = process.env[ConfigEnvVariables.ORIGIN_HOST];
+  if (!originHost) {
+    throw new Error("ORIGIN_HOST is required");
   }
 
   // URL list is required
@@ -196,6 +214,8 @@ export function loadConfig(): Configuration {
   return {
     batchId,
     requestSource,
+    domain,
+    originHost,
     urlList,
     webhookUrl,
     webhookSignature,

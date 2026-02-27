@@ -43,6 +43,8 @@ cp .env.sample .env.local
 | ------------------------ | -------- | ------------------------ | ------------------------------------------------------------------------------------- |
 | `BATCH_ID`               | yes      | —                        | Unique identifier for this batch, passed through to the webhook payload as `batch_id`  |
 | `REQUEST_SOURCE`         | yes      | —                        | Job trigger identifier (e.g. `scheduler`, `manual`); sent as `source` in the webhook  |
+| `DOMAIN`                 | yes      | —                        | The domain being prerendered (e.g. `example.com`); sent as `domain` in the webhook    |
+| `ORIGIN_HOST`            | yes      | —                        | The origin host to fetch pages from (e.g. `origin.example.com`); sent as `origin_host` in the webhook |
 | `URL_LIST`               | yes      | —                        | JSON array of URLs to prerender, e.g. `["https://example.com/","https://example.com/about"]` (all must share the same hostname) |
 | `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                                 |
 | `CF_API_TOKEN`           | yes      | —                        | Cloudflare API token (KV write access)                                                |
@@ -128,6 +130,7 @@ On completion the job sends a JSON summary via Telegram (if configured) and/or P
   "source": "scheduler", // value of the REQUEST_SOURCE env var
   "google_cloud_execution_id": "abc123", // Cloud Run execution ID, or "local"
   "domain": "example.com",
+  "origin_host": "origin.example.com",
   "urls_rendered": 42,
   "urls_synced_r2": 42,
   "urls_synced_kv": 42,

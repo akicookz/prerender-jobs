@@ -5,7 +5,7 @@ import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { CacheInvalidator } from "./cache-manager/cache-invalidator";
-import { buildKvKey, normalizeDomain } from "./cache-manager/kv-key-utils";
+import { buildKvKey } from "./cache-manager/kv-key-utils";
 import { KvLoader } from "./cache-manager/kv-loader";
 import { R2Loader } from "./cache-manager/r2-loader";
 import { KvRecord } from "./cache-manager/type";
@@ -34,6 +34,7 @@ interface ReportResultBody {
   source: string;
   google_cloud_execution_id: string;
   domain: string;
+  origin_host: string;
   urls_rendered: number;
   urls_synced_r2: number;
   urls_synced_kv: number;
@@ -101,6 +102,7 @@ async function reportResult({
   config,
   urlResultMap,
   domain,
+  originHost,
   sitemapUrl,
   sitemapFilter,
   startedAt,
@@ -109,6 +111,7 @@ async function reportResult({
   config: Configuration;
   urlResultMap: Map<string, PipelineResult>;
   domain: string;
+  originHost: string;
   sitemapUrl: string;
   sitemapFilter: string;
   startedAt: number;
@@ -164,6 +167,7 @@ async function reportResult({
     source: config.requestSource,
     google_cloud_execution_id: process.env.CLOUD_RUN_EXECUTION ?? "local",
     domain,
+    origin_host: originHost,
     urls_rendered: countRendered,
     urls_synced_r2: countR2Synced,
     urls_synced_kv: countKvSynced,
@@ -598,12 +602,12 @@ async function main({ config }: { config: Configuration }): Promise<void> {
   const completedAt = Date.now();
 
   // STEP 5 : Report result
-  const domain = normalizeDomain({ domain: getHostname(urlsToRender[0]!)! });
 
   await reportResult({
     config,
     urlResultMap,
-    domain,
+    domain: config.domain,
+    originHost: config.originHost,
     sitemapUrl,
     sitemapFilter: config.skipSitemapParsing
       ? "skipped"
