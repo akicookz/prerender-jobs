@@ -357,7 +357,7 @@ async function runPipeline({
 
   // Upload snapshot to R2
   const r2Loader = R2Loader.register({
-    targetUrl: renderResult.finalUrl,
+    targetUrl: renderResult.url,
     html: renderResult.html,
     seoAnalysis: seoAnalysisResult,
     userAgent: config.userAgent,
