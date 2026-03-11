@@ -31,6 +31,7 @@ interface PipelineResult {
 
 interface ReportResultBody {
   batch_id: string;
+  user_id: string;
   source: string;
   google_cloud_execution_id: string;
   domain: string;
@@ -107,6 +108,7 @@ async function reportResult({
   sitemapFilter,
   startedAt,
   completedAt,
+  userId,
 }: {
   config: Configuration;
   urlResultMap: Map<string, PipelineResult>;
@@ -116,6 +118,7 @@ async function reportResult({
   sitemapFilter: string;
   startedAt: number;
   completedAt: number;
+  userId: string;
 }): Promise<void> {
   const {
     successUrls,
@@ -164,6 +167,7 @@ async function reportResult({
   );
   const resultBody: ReportResultBody = {
     batch_id: config.batchId,
+    user_id: userId,
     source: config.requestSource,
     google_cloud_execution_id: process.env.CLOUD_RUN_EXECUTION ?? "local",
     domain,
@@ -331,7 +335,7 @@ async function runPipeline({
     );
     return result;
   }
-
+  console.log(renderResult.html);
   let seoAnalysisResult: PageSeoAnalysis | null = null;
   try {
     const analyzer = SeoAnalyzer.register({
@@ -614,6 +618,7 @@ async function main({ config }: { config: Configuration }): Promise<void> {
       : config.sitemapUpdatedWithin,
     startedAt,
     completedAt,
+    userId: config.userId,
   });
 }
 

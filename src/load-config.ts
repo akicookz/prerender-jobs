@@ -17,6 +17,7 @@ export enum LastmodFilter {
 enum ConfigEnvVariables {
   // REQUIRED
   BATCH_ID = "BATCH_ID",
+  USER_ID = "USER_ID",
   URL_LIST = "URL_LIST",
   DOMAIN = "DOMAIN",
   ORIGIN_HOST = "ORIGIN_HOST",
@@ -45,6 +46,7 @@ enum ConfigEnvVariables {
 
 export interface Configuration {
   batchId: string;
+  userId: string;
   requestSource: string;
   // Domain
   domain: string;
@@ -94,6 +96,12 @@ export function loadConfig(): Configuration {
   const batchId = process.env[ConfigEnvVariables.BATCH_ID];
   if (!batchId) {
     throw new Error("BATCH_ID is required");
+  }
+
+  // User ID is required
+  const userId = process.env[ConfigEnvVariables.USER_ID];
+  if (!userId) {
+    throw new Error("USER_ID is required");
   }
 
   // Request source is required
@@ -213,6 +221,7 @@ export function loadConfig(): Configuration {
 
   return {
     batchId,
+    userId,
     requestSource,
     domain,
     originHost,
