@@ -335,7 +335,7 @@ async function runPipeline({
     );
     return result;
   }
-  console.log(renderResult.html);
+
   let seoAnalysisResult: PageSeoAnalysis | null = null;
   try {
     const analyzer = SeoAnalyzer.register({
