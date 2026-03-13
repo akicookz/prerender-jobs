@@ -36,6 +36,7 @@ interface ReportResultBody {
   source: string;
   google_cloud_execution_id: string;
   domain: string;
+  canonical_domain: string;
   origin_host: string;
   urls_rendered: number;
   urls_synced_r2: number;
@@ -104,6 +105,7 @@ async function reportResult({
   config,
   urlResultMap,
   domain,
+  canonicalDomain,
   originHost,
   sitemapUrl,
   sitemapFilter,
@@ -114,6 +116,7 @@ async function reportResult({
   config: Configuration;
   urlResultMap: Map<string, PipelineResult>;
   domain: string;
+  canonicalDomain: string;
   originHost: string;
   sitemapUrl: string;
   sitemapFilter: string;
@@ -172,6 +175,7 @@ async function reportResult({
     source: config.requestSource,
     google_cloud_execution_id: process.env.CLOUD_RUN_EXECUTION ?? "local",
     domain,
+    canonical_domain: canonicalDomain,
     origin_host: originHost,
     urls_rendered: countRendered,
     urls_synced_r2: countR2Synced,
@@ -617,6 +621,7 @@ async function main({ config }: { config: Configuration }): Promise<void> {
     config,
     urlResultMap,
     domain: config.domain,
+    canonicalDomain: config.canonicalDomain,
     originHost: config.originHost,
     sitemapUrl,
     sitemapFilter: config.skipSitemapParsing
