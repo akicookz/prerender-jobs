@@ -201,9 +201,7 @@ async function reportResult({
         retry_count: number;
       };
     } catch (e) {
-      logger.error(
-        `Failed to parse retry options: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      logger.error(`Failed to parse retry options`, e);
     }
   }
   const isRetryRun =
@@ -251,9 +249,7 @@ async function reportResult({
       );
       logger.info(`Result sent to Telegram successfully`);
     } catch (e) {
-      logger.error(
-        `Failed to send result to Telegram: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      logger.error(`Failed to send result to Telegram`, e);
     }
   }
 
@@ -276,9 +272,7 @@ async function reportResult({
       }
       logger.info(`Webhook called successfully`);
     } catch (e) {
-      logger.error(
-        `Failed to call webhook: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      logger.error(`Failed to call webhook`, e);
     }
   }
 }
@@ -292,9 +286,7 @@ async function launchBrowser(): Promise<Browser> {
     logger.info("Browser launched successfully");
     return browser;
   } catch (e) {
-    logger.error(
-      `Failed to launch browser: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    logger.error(`Failed to launch browser`, e);
     throw e;
   }
 }
@@ -331,18 +323,25 @@ async function runPipeline({
     result.isRendered = true;
     logger.info(`${INDENT}${INDENT}↳ ${path} - rendering completed`);
   } catch (e) {
-    logger.error(
-      `${INDENT}${INDENT}↳ ${path} - rendering failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    logger.error(`${INDENT}${INDENT}↳ ${path} - rendering failed`, e);
     return result;
   }
 
   // Sanitize rendered HTML: fix metadata, remove noise, inject missing tags
-  const sanitizedHtml = sanitizeHtml({
-    html: renderResult.html,
-    url: renderResult.finalUrl,
-    canonicalDomain: config.canonicalDomain,
-  });
+  let sanitizedHtml: string;
+  try {
+    sanitizedHtml = sanitizeHtml({
+      html: renderResult.html,
+      url: renderResult.finalUrl,
+      canonicalDomain: config.canonicalDomain,
+    });
+  } catch (e) {
+    logger.error(
+      `${INDENT}${INDENT}↳ ${path} - HTML sanitization failed fallback to original HTML`,
+      e,
+    );
+    sanitizedHtml = renderResult.html;
+  }
   logger.info(`${INDENT}${INDENT}↳ ${path} - HTML sanitized`);
 
   let seoAnalysisResult: PageSeoAnalysis | null = null;
@@ -357,9 +356,7 @@ async function runPipeline({
     result.isAnalyzed = true;
     logger.info(`${INDENT}${INDENT}↳ ${path} - SEO analysis completed`);
   } catch (e) {
-    logger.error(
-      `${INDENT}${INDENT}↳ ${path} - SEO analysis failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    logger.error(`${INDENT}${INDENT}↳ ${path} - SEO analysis failed`, e);
     return result;
   }
 
