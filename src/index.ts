@@ -11,6 +11,7 @@ import { R2Loader } from "./cache-manager/r2-loader";
 import { KvRecord } from "./cache-manager/type";
 import { loadConfig, type Configuration } from "./load-config";
 import { AppLogger, INDENT } from "./logger";
+import { sanitizeHtml } from "./html-sanitizer";
 import { RenderEngine, type RenderResult } from "./render-engine";
 import { SeoAnalyzer } from "./seo-analyzer/index";
 import type { PageSeoAnalysis } from "./seo-analyzer/type";
@@ -336,10 +337,18 @@ async function runPipeline({
     return result;
   }
 
+  // Sanitize rendered HTML: fix metadata, remove noise, inject missing tags
+  const sanitizedHtml = sanitizeHtml({
+    html: renderResult.html,
+    url: renderResult.finalUrl,
+    canonicalDomain: config.canonicalDomain,
+  });
+  logger.info(`${INDENT}${INDENT}↳ ${path} - HTML sanitized`);
+
   let seoAnalysisResult: PageSeoAnalysis | null = null;
   try {
     const analyzer = SeoAnalyzer.register({
-      html: renderResult.html,
+      html: sanitizedHtml,
       url: renderResult.finalUrl,
       statusCode: renderResult.statusCode,
       xRobotsTag: renderResult.xRobotsTag ?? null,
@@ -362,7 +371,7 @@ async function runPipeline({
   // Upload snapshot to R2
   const r2Loader = R2Loader.register({
     targetUrl: renderResult.url,
-    html: renderResult.html,
+    html: sanitizedHtml,
     seoAnalysis: seoAnalysisResult,
     userAgent: config.userAgent,
     r2CacheConfig: {

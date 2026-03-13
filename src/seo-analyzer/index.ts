@@ -1,5 +1,6 @@
 import { JSDOM } from "jsdom";
 import { DEFAULT_SEO_CONFIG } from "./config";
+import { detectSoft404 } from "../html-sanitizer/soft-404";
 import type { MetaTags, OgTags, PageSeoAnalysis } from "./type";
 
 export class SeoAnalyzer {
@@ -65,7 +66,7 @@ export class SeoAnalyzer {
     // -------------------------------------------------------------------------
     // Soft 404 detection
     // -------------------------------------------------------------------------
-    const isSoft404 = this.detectSoft404({
+    const isSoft404 = detectSoft404({
       title: metaTags.title,
       bodyText,
       wordCount,
@@ -292,56 +293,6 @@ export class SeoAnalyzer {
 
   private hasEssentialTwitterTags(ogTags: OgTags): boolean {
     return !!(ogTags.twitterCard && (ogTags.twitterTitle || ogTags.ogTitle));
-  }
-
-  /**
-   * Detect if a 200-status page is actually a soft 404.
-   */
-  private detectSoft404({
-    title,
-    bodyText,
-    wordCount,
-  }: {
-    title: string | undefined;
-    bodyText: string;
-    wordCount: number;
-  }): boolean {
-    const SOFT_404_TITLE_PATTERNS = [
-      /not found/i,
-      /page not found/i,
-      /404/i,
-      /error 404/i,
-      /page unavailable/i,
-      /doesn't exist/i,
-      /does not exist/i,
-      /couldn't find/i,
-      /could not find/i,
-    ];
-
-    // Check title for 404-like patterns
-    if (title) {
-      for (const pattern of SOFT_404_TITLE_PATTERNS) {
-        if (pattern.test(title)) {
-          return true;
-        }
-      }
-    }
-
-    // Check for very short content with 404-like text
-    if (wordCount < 50) {
-      for (const pattern of SOFT_404_TITLE_PATTERNS) {
-        if (pattern.test(bodyText)) {
-          return true;
-        }
-      }
-    }
-
-    // Extremely thin content might indicate soft 404
-    if (wordCount < 20) {
-      return true;
-    }
-
-    return false;
   }
 
   /**

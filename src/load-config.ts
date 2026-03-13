@@ -42,6 +42,7 @@ enum ConfigEnvVariables {
   TELEGRAM_CHAT_ID = "TELEGRAM_CHAT_ID",
   RETRY_OPTIONS = "RETRY_OPTIONS",
   REQUEST_SOURCE = "REQUEST_SOURCE",
+  CANONICAL_DOMAIN = "CANONICAL_DOMAIN",
 }
 
 export interface Configuration {
@@ -52,6 +53,8 @@ export interface Configuration {
   domain: string;
   // Origin host
   originHost: string;
+  // Canonical domain (preferred hostname for canonical URLs)
+  canonicalDomain: string;
   // JSON array of URLs
   urlList: string[];
   // Callback URL on completion
@@ -121,6 +124,10 @@ export function loadConfig(): Configuration {
   if (!originHost) {
     throw new Error("ORIGIN_HOST is required");
   }
+
+  // Canonical domain is optional; falls back to DOMAIN if not set
+  const canonicalDomain =
+    process.env[ConfigEnvVariables.CANONICAL_DOMAIN] || domain;
 
   // URL list is required
   const urlListRaw = process.env[ConfigEnvVariables.URL_LIST] ?? "";
@@ -225,6 +232,7 @@ export function loadConfig(): Configuration {
     requestSource,
     domain,
     originHost,
+    canonicalDomain,
     urlList,
     webhookUrl,
     webhookSignature,
