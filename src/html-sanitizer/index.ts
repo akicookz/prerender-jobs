@@ -41,6 +41,11 @@ export function sanitizeHtml({
   const root = parse(html, { comment: true });
 
   // -------------------------------------------------------------------------
+  // Step 0: Merge multiple <head> elements into one
+  // -------------------------------------------------------------------------
+  mergeHeadTags(root);
+
+  // -------------------------------------------------------------------------
   // Step 1: Extract body text BEFORE any body modifications (needed for soft 404)
   // -------------------------------------------------------------------------
   const titleEl = root.querySelector("title");
@@ -175,6 +180,33 @@ export function sanitizeHtml({
 // ---------------------------------------------------------------------------
 // Implementation helpers
 // ---------------------------------------------------------------------------
+
+// -- Step 0 --
+
+/**
+ * Merge multiple <head> elements into one.
+ *
+ * SPA frameworks (React with react-helmet, Next.js, etc.) can produce HTML
+ * with more than one <head>. We consolidate all children into the first
+ * <head> and remove the duplicates so that every downstream step operates
+ * on a single, unified <head>.
+ */
+function mergeHeadTags(root: HTMLElement): void {
+  const heads = root.querySelectorAll("head");
+  if (heads.length <= 1) return;
+
+  const primary = heads[0]!;
+
+  for (let i = 1; i < heads.length; i++) {
+    const dup = heads[i]!;
+    // Move every child node into the primary <head>
+    for (const child of [...dup.childNodes]) {
+      primary.appendChild(child);
+    }
+    // Remove the now-empty duplicate <head>
+    dup.remove();
+  }
+}
 
 /**
  * Extract plain text from body for soft 404 detection.

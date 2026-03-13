@@ -38,6 +38,64 @@ function wordsBody(n: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// Step 0 — Merge multiple <head> elements
+// ---------------------------------------------------------------------------
+describe("Step 0: merge multiple <head> tags", () => {
+  it("merges two <head> elements into one", () => {
+    const html = `<!DOCTYPE html><html><head><title>Hello</title></head><head><meta name="description" content="desc"></head><body><p>content</p></body></html>`;
+    const result = sanitize(html);
+    expect(result.match(/<head>/g)).toHaveLength(1);
+    expect(result.match(/<\/head>/g)).toHaveLength(1);
+    expect(result).toContain("<title>");
+    expect(result).toContain('content="desc"');
+  });
+
+  it("merges three <head> elements into one", () => {
+    const html = `<!DOCTYPE html><html><head><title>Title</title></head><head><meta name="description" content="desc"></head><head><link rel="canonical" href="https://example.com/page"></head><body><p>content</p></body></html>`;
+    const result = sanitize(html);
+    expect(result.match(/<head>/g)).toHaveLength(1);
+    expect(result).toContain("<title>");
+    expect(result).toContain('content="desc"');
+    expect(result).toContain('rel="canonical"');
+  });
+
+  it("preserves children from all heads after merge", () => {
+    const html = `<!DOCTYPE html><html><head><meta property="og:title" content="OG Title"></head><head><meta property="og:description" content="OG Desc"></head><body><p>content</p></body></html>`;
+    const result = sanitize(html);
+    expect(result).toContain('content="OG Title"');
+    expect(result).toContain('content="OG Desc"');
+  });
+
+  it("deduplicates titles across merged heads", () => {
+    const html = `<!DOCTYPE html><html><head><title>First</title></head><head><title>Second</title></head><body><p>content</p></body></html>`;
+    const result = sanitize(html);
+    // After merge + deduplication, only one <title> should remain
+    expect(result.match(/<title>/g)).toHaveLength(1);
+    // Last wins (the deduplication rule)
+    expect(result).toContain("Second");
+  });
+
+  it("does not affect documents with a single <head>", () => {
+    const html = doc({
+      head: '<title>Only One</title><meta name="description" content="desc">',
+      body: "<p>content</p>",
+    });
+    const result = sanitize(html);
+    expect(result.match(/<head>/g)).toHaveLength(1);
+    expect(result).toContain("Only One");
+    expect(result).toContain('content="desc"');
+  });
+
+  it("injects metadata into the merged head correctly", () => {
+    // Second head has a title but no og:title — injection should still work
+    const html = `<!DOCTYPE html><html lang="en"><head></head><head><title>My Page</title></head><body><p>content</p></body></html>`;
+    const result = sanitize(html);
+    expect(result.match(/<head>/g)).toHaveLength(1);
+    expect(result).toContain('property="og:title" content="My Page"');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // R1 — Remove noindex tags
 // ---------------------------------------------------------------------------
 describe("R1: noindex removal", () => {
