@@ -159,14 +159,17 @@ export function sanitizeHtml({
   // -------------------------------------------------------------------------
   // Serialize
   // -------------------------------------------------------------------------
-  let output = root.toString();
+  const output = root.toString();
 
   // -------------------------------------------------------------------------
   // R28: Collapse excessive whitespace
   // -------------------------------------------------------------------------
-  output = collapseWhitespace(output);
+  const collapsedOutput = collapseWhitespace(output);
 
-  return output;
+  const finalRoot = parse(collapsedOutput);
+  const finalOutput = finalRoot.toString();
+
+  return finalOutput;
 }
 
 // ---------------------------------------------------------------------------
