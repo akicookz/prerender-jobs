@@ -11,6 +11,7 @@ import { R2Loader } from "./cache-manager/r2-loader";
 import { KvRecord } from "./cache-manager/type";
 import { loadConfig, type Configuration } from "./load-config";
 import { AppLogger, INDENT } from "./logger";
+import { sanitizeHtml } from "./html-sanitizer";
 import { RenderEngine, type RenderResult } from "./render-engine";
 import { SeoAnalyzer } from "./seo-analyzer/index";
 import type { PageSeoAnalysis } from "./seo-analyzer/type";
@@ -35,6 +36,7 @@ interface ReportResultBody {
   source: string;
   google_cloud_execution_id: string;
   domain: string;
+  canonical_domain: string;
   origin_host: string;
   urls_rendered: number;
   urls_synced_r2: number;
@@ -103,6 +105,7 @@ async function reportResult({
   config,
   urlResultMap,
   domain,
+  canonicalDomain,
   originHost,
   sitemapUrl,
   sitemapFilter,
@@ -113,6 +116,7 @@ async function reportResult({
   config: Configuration;
   urlResultMap: Map<string, PipelineResult>;
   domain: string;
+  canonicalDomain: string;
   originHost: string;
   sitemapUrl: string;
   sitemapFilter: string;
@@ -171,6 +175,7 @@ async function reportResult({
     source: config.requestSource,
     google_cloud_execution_id: process.env.CLOUD_RUN_EXECUTION ?? "local",
     domain,
+    canonical_domain: canonicalDomain,
     origin_host: originHost,
     urls_rendered: countRendered,
     urls_synced_r2: countR2Synced,
@@ -200,9 +205,7 @@ async function reportResult({
         retry_count: number;
       };
     } catch (e) {
-      logger.error(
-        `Failed to parse retry options: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      logger.error(`Failed to parse retry options`, e);
     }
   }
   const isRetryRun =
@@ -250,9 +253,7 @@ async function reportResult({
       );
       logger.info(`Result sent to Telegram successfully`);
     } catch (e) {
-      logger.error(
-        `Failed to send result to Telegram: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      logger.error(`Failed to send result to Telegram`, e);
     }
   }
 
@@ -275,9 +276,7 @@ async function reportResult({
       }
       logger.info(`Webhook called successfully`);
     } catch (e) {
-      logger.error(
-        `Failed to call webhook: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      logger.error(`Failed to call webhook`, e);
     }
   }
 }
@@ -291,9 +290,7 @@ async function launchBrowser(): Promise<Browser> {
     logger.info("Browser launched successfully");
     return browser;
   } catch (e) {
-    logger.error(
-      `Failed to launch browser: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    logger.error(`Failed to launch browser`, e);
     throw e;
   }
 }
@@ -330,16 +327,31 @@ async function runPipeline({
     result.isRendered = true;
     logger.info(`${INDENT}${INDENT}↳ ${path} - rendering completed`);
   } catch (e) {
-    logger.error(
-      `${INDENT}${INDENT}↳ ${path} - rendering failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    logger.error(`${INDENT}${INDENT}↳ ${path} - rendering failed`, e);
     return result;
   }
+
+  // Sanitize rendered HTML: fix metadata, remove noise, inject missing tags
+  let sanitizedHtml: string;
+  try {
+    sanitizedHtml = sanitizeHtml({
+      html: renderResult.html,
+      url: renderResult.finalUrl,
+      canonicalDomain: config.canonicalDomain,
+    });
+  } catch (e) {
+    logger.error(
+      `${INDENT}${INDENT}↳ ${path} - HTML sanitization failed fallback to original HTML`,
+      e,
+    );
+    sanitizedHtml = renderResult.html;
+  }
+  logger.info(`${INDENT}${INDENT}↳ ${path} - HTML sanitized`);
 
   let seoAnalysisResult: PageSeoAnalysis | null = null;
   try {
     const analyzer = SeoAnalyzer.register({
-      html: renderResult.html,
+      html: sanitizedHtml,
       url: renderResult.finalUrl,
       statusCode: renderResult.statusCode,
       xRobotsTag: renderResult.xRobotsTag ?? null,
@@ -348,9 +360,7 @@ async function runPipeline({
     result.isAnalyzed = true;
     logger.info(`${INDENT}${INDENT}↳ ${path} - SEO analysis completed`);
   } catch (e) {
-    logger.error(
-      `${INDENT}${INDENT}↳ ${path} - SEO analysis failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    logger.error(`${INDENT}${INDENT}↳ ${path} - SEO analysis failed`, e);
     return result;
   }
 
@@ -362,7 +372,7 @@ async function runPipeline({
   // Upload snapshot to R2
   const r2Loader = R2Loader.register({
     targetUrl: renderResult.url,
-    html: renderResult.html,
+    html: sanitizedHtml,
     seoAnalysis: seoAnalysisResult,
     userAgent: config.userAgent,
     r2CacheConfig: {
@@ -611,6 +621,7 @@ async function main({ config }: { config: Configuration }): Promise<void> {
     config,
     urlResultMap,
     domain: config.domain,
+    canonicalDomain: config.canonicalDomain,
     originHost: config.originHost,
     sitemapUrl,
     sitemapFilter: config.skipSitemapParsing

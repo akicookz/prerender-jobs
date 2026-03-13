@@ -115,38 +115,6 @@ export class R2Loader {
       kvRecord,
       objectKey,
     };
-
-    // // Update KV record
-    // const kvKey = this.buildKvKey({ url });
-
-    // // Invalidate stale R2 object
-    // try {
-    //   await this.invalidateStaleR2Object({
-    //     kvKey,
-    //     objectKey,
-    //   });
-    // } catch (e) {
-    //   this._logger.error(`Failed to invalidate stale R2 object: ${String(e)}`);
-    // }
-
-    // try {
-    //   await this.putKvRecord({
-    //     kvKey,
-    //     kvRecord,
-    //   });
-    //   return {
-    //     kvSynced: true,
-    //     r2Synced: true,
-    //   };
-    // } catch (e) {
-    //   this._logger.error(
-    //     `Failed to update KV record: ${e instanceof Error ? e.message : String(e)}`,
-    //   );
-    //   return {
-    //     kvSynced: false,
-    //     r2Synced: true,
-    //   };
-    // }
   }
 
   private get r2Client(): S3Client {

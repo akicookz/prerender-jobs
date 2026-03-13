@@ -1,5 +1,6 @@
-import { JSDOM } from "jsdom";
+import { parse, type HTMLElement } from "node-html-parser";
 import { DEFAULT_SEO_CONFIG } from "./config";
+import { detectSoft404 } from "../html-sanitizer/soft-404";
 import type { MetaTags, OgTags, PageSeoAnalysis } from "./type";
 
 export class SeoAnalyzer {
@@ -43,16 +44,15 @@ export class SeoAnalyzer {
   }
 
   analyze(): PageSeoAnalysis {
-    const dom = new JSDOM(this._html);
-    const document = dom.window.document;
+    const root = parse(this._html);
 
     // Extract meta tags
-    const metaTags = this.extractMetaTags({ document });
-    const ogTags = this.extractOgTags({ document });
-    const h1Tags = this.extractH1Tags({ document });
+    const metaTags = this.extractMetaTags({ root });
+    const ogTags = this.extractOgTags({ root });
+    const h1Tags = this.extractH1Tags({ root });
 
     // Extract body text and count words
-    const bodyText = this.extractBodyText({ document });
+    const bodyText = this.extractBodyText({ root });
     const wordCount = this.countWords({ text: bodyText });
 
     // -------------------------------------------------------------------------
@@ -65,7 +65,7 @@ export class SeoAnalyzer {
     // -------------------------------------------------------------------------
     // Soft 404 detection
     // -------------------------------------------------------------------------
-    const isSoft404 = this.detectSoft404({
+    const isSoft404 = detectSoft404({
       title: metaTags.title,
       bodyText,
       wordCount,
@@ -110,17 +110,17 @@ export class SeoAnalyzer {
     };
   }
 
-  private extractMetaTags({ document }: { document: Document }): MetaTags {
+  private extractMetaTags({ root }: { root: HTMLElement }): MetaTags {
     const metaTags: MetaTags = {};
     // title
-    const title = document.querySelector("title")?.textContent;
+    const title = root.querySelector("title")?.textContent;
     if (title) {
       metaTags.title = title;
       metaTags.titleLength = title.length;
     }
 
     // description
-    const description = document
+    const description = root
       .querySelector("meta[name='description']")
       ?.getAttribute("content");
     if (description) {
@@ -129,7 +129,7 @@ export class SeoAnalyzer {
     }
 
     // canonical
-    const canonical = document
+    const canonical = root
       .querySelector("link[rel='canonical']")
       ?.getAttribute("href");
     if (canonical) {
@@ -137,7 +137,7 @@ export class SeoAnalyzer {
     }
 
     // robots meta
-    const robotsMeta = document
+    const robotsMeta = root
       .querySelector("meta[name='robots']")
       ?.getAttribute("content");
     if (robotsMeta) {
@@ -145,7 +145,7 @@ export class SeoAnalyzer {
     }
 
     // viewport
-    const viewport = document
+    const viewport = root
       .querySelector("meta[name='viewport']")
       ?.getAttribute("content");
     if (viewport) {
@@ -153,7 +153,7 @@ export class SeoAnalyzer {
     }
 
     // charset
-    const charset = document
+    const charset = root
       .querySelector("meta[charset]")
       ?.getAttribute("charset");
     if (charset) {
@@ -163,10 +163,10 @@ export class SeoAnalyzer {
     return metaTags;
   }
 
-  private extractOgTags({ document }: { document: Document }): OgTags {
+  private extractOgTags({ root }: { root: HTMLElement }): OgTags {
     const ogTags: OgTags = {};
     // title
-    const ogTitle = document
+    const ogTitle = root
       .querySelector("meta[property='og:title']")
       ?.getAttribute("content");
     if (ogTitle) {
@@ -174,7 +174,7 @@ export class SeoAnalyzer {
     }
 
     // description
-    const ogDescription = document
+    const ogDescription = root
       .querySelector("meta[property='og:description']")
       ?.getAttribute("content");
     if (ogDescription) {
@@ -182,7 +182,7 @@ export class SeoAnalyzer {
     }
 
     // image
-    const ogImage = document
+    const ogImage = root
       .querySelector("meta[property='og:image']")
       ?.getAttribute("content");
     if (ogImage) {
@@ -190,7 +190,7 @@ export class SeoAnalyzer {
     }
 
     // url
-    const ogUrl = document
+    const ogUrl = root
       .querySelector("meta[property='og:url']")
       ?.getAttribute("content");
     if (ogUrl) {
@@ -198,7 +198,7 @@ export class SeoAnalyzer {
     }
 
     // type
-    const ogType = document
+    const ogType = root
       .querySelector("meta[property='og:type']")
       ?.getAttribute("content");
     if (ogType) {
@@ -206,7 +206,7 @@ export class SeoAnalyzer {
     }
 
     // site name
-    const ogSiteName = document
+    const ogSiteName = root
       .querySelector("meta[property='og:site_name']")
       ?.getAttribute("content");
     if (ogSiteName) {
@@ -214,7 +214,7 @@ export class SeoAnalyzer {
     }
 
     // twitter card
-    const twitterCard = document
+    const twitterCard = root
       .querySelector("meta[name='twitter:card']")
       ?.getAttribute("content");
     if (twitterCard) {
@@ -222,7 +222,7 @@ export class SeoAnalyzer {
     }
 
     // twitter title
-    const twitterTitle = document
+    const twitterTitle = root
       .querySelector("meta[name='twitter:title']")
       ?.getAttribute("content");
     if (twitterTitle) {
@@ -230,7 +230,7 @@ export class SeoAnalyzer {
     }
 
     // twitter description
-    const twitterDescription = document
+    const twitterDescription = root
       .querySelector("meta[name='twitter:description']")
       ?.getAttribute("content");
     if (twitterDescription) {
@@ -238,7 +238,7 @@ export class SeoAnalyzer {
     }
 
     // twitter image
-    const twitterImage = document
+    const twitterImage = root
       .querySelector("meta[name='twitter:image']")
       ?.getAttribute("content");
     if (twitterImage) {
@@ -247,8 +247,8 @@ export class SeoAnalyzer {
 
     // favicon
     const favicon = (
-      document.querySelector("link[rel='icon']") ||
-      document.querySelector("link[rel='shortcut icon']")
+      root.querySelector("link[rel='icon']") ||
+      root.querySelector("link[rel='shortcut icon']")
     )?.getAttribute("href");
     if (favicon) {
       ogTags.favicon = favicon;
@@ -257,10 +257,8 @@ export class SeoAnalyzer {
     return ogTags;
   }
 
-  private extractH1Tags({ document }: { document: Document }): string[] {
-    return Array.from(document.querySelectorAll("h1")).map(
-      (h1) => h1.textContent || "",
-    );
+  private extractH1Tags({ root }: { root: HTMLElement }): string[] {
+    return root.querySelectorAll("h1").map((h1) => h1.textContent || "");
   }
 
   private checkIndexability({
@@ -295,61 +293,11 @@ export class SeoAnalyzer {
   }
 
   /**
-   * Detect if a 200-status page is actually a soft 404.
-   */
-  private detectSoft404({
-    title,
-    bodyText,
-    wordCount,
-  }: {
-    title: string | undefined;
-    bodyText: string;
-    wordCount: number;
-  }): boolean {
-    const SOFT_404_TITLE_PATTERNS = [
-      /not found/i,
-      /page not found/i,
-      /404/i,
-      /error 404/i,
-      /page unavailable/i,
-      /doesn't exist/i,
-      /does not exist/i,
-      /couldn't find/i,
-      /could not find/i,
-    ];
-
-    // Check title for 404-like patterns
-    if (title) {
-      for (const pattern of SOFT_404_TITLE_PATTERNS) {
-        if (pattern.test(title)) {
-          return true;
-        }
-      }
-    }
-
-    // Check for very short content with 404-like text
-    if (wordCount < 50) {
-      for (const pattern of SOFT_404_TITLE_PATTERNS) {
-        if (pattern.test(bodyText)) {
-          return true;
-        }
-      }
-    }
-
-    // Extremely thin content might indicate soft 404
-    if (wordCount < 20) {
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
    * Extract text using DOM traversal
    */
 
-  private extractBodyText({ document }: { document: Document }): string {
-    let content = document.body.innerHTML;
+  private extractBodyText({ root }: { root: HTMLElement }): string {
+    let content = root.querySelector("body")?.innerHTML ?? "";
 
     // Remove script/style/noscript/template blocks (robust to whitespace + missing closers)
     content = content
