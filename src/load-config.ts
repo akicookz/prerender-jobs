@@ -1,6 +1,5 @@
-import { isMemberOfEnum } from "./util";
-import validator from "validator";
 import { getHostname } from "tldts";
+import { isMemberOfEnum } from "./util";
 
 const DEFAULT_CACHE_TTL = 604800; // 7 days
 const DEFAULT_USER_AGENT =
@@ -140,7 +139,7 @@ export function loadConfig(): Configuration {
   if (urlList.length === 0) {
     throw new Error("URL_LIST is required and must be a non-empty CSV");
   }
-  if (urlList.some((url) => !validator.isURL(url))) {
+  if (urlList.some((url) => !url.startsWith("https://"))) {
     throw new Error("URL_LIST must be a list of URLs starting with https://");
   }
   const urlHostname = getHostname(urlList[0]!);
