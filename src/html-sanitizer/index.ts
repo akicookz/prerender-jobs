@@ -48,58 +48,63 @@ export function sanitizeHtml({
   // -------------------------------------------------------------------------
   // Step 1: Extract body text BEFORE any body modifications (needed for soft 404)
   // -------------------------------------------------------------------------
-  const titleEl = root.querySelector("title");
+  const head = root.querySelector("head");
+  const titleEl = head?.querySelector("title") ?? null;
   const titleText = titleEl?.textContent ?? undefined;
   const bodyText = extractBodyText(root);
   const wordCount = countWords(bodyText);
 
-  // -------------------------------------------------------------------------
-  // R1: Remove noindex meta tags
-  // -------------------------------------------------------------------------
   const isSoft404 = detectSoft404({
     title: titleText,
     bodyText,
     wordCount,
   });
-  removeNoindexTags(root, isSoft404);
 
-  // -------------------------------------------------------------------------
-  // R2: Deduplicate unique tags
-  // -------------------------------------------------------------------------
-  deduplicateTitles(root);
-  for (const selector of UNIQUE_TAG_SELECTORS) {
-    deduplicateBySelector(root, selector);
+  let canonicalUrl: string | null = null;
+  if (head) {
+    // -------------------------------------------------------------------------
+    // R1: Remove noindex meta tags
+    // -------------------------------------------------------------------------
+    removeNoindexTags(head, isSoft404);
+
+    // -------------------------------------------------------------------------
+    // R2: Deduplicate unique tags
+    // -------------------------------------------------------------------------
+    deduplicateTitles(head);
+    for (const selector of UNIQUE_TAG_SELECTORS) {
+      deduplicateBySelector(head, selector);
+    }
+    deduplicateOgProperties(head);
+    deduplicateTwitterProperties(head);
+
+    // -------------------------------------------------------------------------
+    // Internal param cleaning (migrated from RenderEngine)
+    // -------------------------------------------------------------------------
+    cleanInternalParams(head);
+
+    // -------------------------------------------------------------------------
+    // R3: Fix canonical URL hostname
+    // -------------------------------------------------------------------------
+    canonicalUrl = fixCanonicalUrl(head, canonicalDomain, url);
+
+    // -------------------------------------------------------------------------
+    // R4: Sync og:url and twitter:url with corrected canonical
+    // -------------------------------------------------------------------------
+    if (canonicalUrl) {
+      syncUrlMeta(head, canonicalUrl);
+    }
+
+    // -------------------------------------------------------------------------
+    // R5: Fix <base href> hostname
+    // -------------------------------------------------------------------------
+    fixBaseTag(head, canonicalDomain);
+
+    // -------------------------------------------------------------------------
+    // R6: Ensure charset and viewport exist
+    // -------------------------------------------------------------------------
+    ensureCharset(head);
+    ensureViewport(head);
   }
-  deduplicateOgProperties(root);
-  deduplicateTwitterProperties(root);
-
-  // -------------------------------------------------------------------------
-  // Internal param cleaning (migrated from RenderEngine)
-  // -------------------------------------------------------------------------
-  cleanInternalParams(root);
-
-  // -------------------------------------------------------------------------
-  // R3: Fix canonical URL hostname
-  // -------------------------------------------------------------------------
-  const canonicalUrl = fixCanonicalUrl(root, canonicalDomain, url);
-
-  // -------------------------------------------------------------------------
-  // R4: Sync og:url and twitter:url with corrected canonical
-  // -------------------------------------------------------------------------
-  if (canonicalUrl) {
-    syncUrlMeta(root, canonicalUrl);
-  }
-
-  // -------------------------------------------------------------------------
-  // R5: Fix <base href> hostname
-  // -------------------------------------------------------------------------
-  fixBaseTag(root, canonicalDomain);
-
-  // -------------------------------------------------------------------------
-  // R6: Ensure charset and viewport exist
-  // -------------------------------------------------------------------------
-  ensureCharset(root);
-  ensureViewport(root);
 
   // -------------------------------------------------------------------------
   // R7 + R10: Remove inline scripts (head + body)
@@ -156,10 +161,12 @@ export function sanitizeHtml({
   // -------------------------------------------------------------------------
   injectMissingMetadata(root, canonicalUrl, canonicalDomain);
 
-  // -------------------------------------------------------------------------
-  // Head tag reordering (migrated from RenderEngine)
-  // -------------------------------------------------------------------------
-  reorderHeadTags(root);
+  if (head) {
+    // -------------------------------------------------------------------------
+    // Head tag reordering (migrated from RenderEngine)
+    // -------------------------------------------------------------------------
+    reorderHeadTags(head);
+  }
 
   // -------------------------------------------------------------------------
   // Serialize
@@ -243,7 +250,7 @@ function countWords(text: string): number {
 
 // -- R1 --
 
-function removeNoindexTags(root: HTMLElement, isSoft404: boolean): void {
+function removeNoindexTags(head: HTMLElement, isSoft404: boolean): void {
   const selectors = [
     'meta[name="robots"]',
     'meta[name="googlebot"]',
@@ -255,7 +262,7 @@ function removeNoindexTags(root: HTMLElement, isSoft404: boolean): void {
   ];
 
   for (const selector of selectors) {
-    const elements = root.querySelectorAll(selector);
+    const elements = head.querySelectorAll(selector);
     for (const el of elements) {
       const content = el.getAttribute("content") ?? "";
       if (!/noindex/i.test(content)) continue;
@@ -273,8 +280,8 @@ function removeNoindexTags(root: HTMLElement, isSoft404: boolean): void {
 
 // -- R2 --
 
-function deduplicateTitles(root: HTMLElement): void {
-  const titles = root.querySelectorAll("title");
+function deduplicateTitles(head: HTMLElement): void {
+  const titles = head.querySelectorAll("title");
   if (titles.length <= 1) return;
 
   // Helmet-marked wins, otherwise last wins
@@ -289,13 +296,24 @@ function deduplicateTitles(root: HTMLElement): void {
     winner = titles[titles.length - 1]!;
   }
 
+  // If the chosen winner has empty text, prefer the last candidate with text
+  if (!winner.textContent?.trim()) {
+    const reversedTitles = [...titles].reverse();
+    for (const el of reversedTitles) {
+      if (el.textContent?.trim()) {
+        winner = el;
+        break;
+      }
+    }
+  }
+
   for (const el of titles) {
     if (el !== winner) el.remove();
   }
 }
 
-function deduplicateBySelector(root: HTMLElement, selector: string): void {
-  const elements = root.querySelectorAll(selector);
+function deduplicateBySelector(head: HTMLElement, selector: string): void {
+  const elements = head.querySelectorAll(selector);
   if (elements.length <= 1) return;
 
   // Helmet-marked wins, otherwise last wins
@@ -319,8 +337,8 @@ function deduplicateBySelector(root: HTMLElement, selector: string): void {
  * Dynamically discover all <meta property="og:*"> tags and deduplicate
  * each unique property value (og:title, og:image, og:image:alt, etc.).
  */
-function deduplicateOgProperties(root: HTMLElement): void {
-  const ogMetas = root.querySelectorAll('meta[property^="og:"]');
+function deduplicateOgProperties(head: HTMLElement): void {
+  const ogMetas = head.querySelectorAll('meta[property^="og:"]');
   const groups = new Map<string, HTMLElement[]>();
 
   for (const el of ogMetas) {
@@ -353,8 +371,8 @@ function deduplicateOgProperties(root: HTMLElement): void {
  * Dynamically discover all <meta name="twitter:*"> tags and deduplicate
  * each unique name value (twitter:card, twitter:image, twitter:site, etc.).
  */
-function deduplicateTwitterProperties(root: HTMLElement): void {
-  const twitterMetas = root.querySelectorAll('meta[name^="twitter:"]');
+function deduplicateTwitterProperties(head: HTMLElement): void {
+  const twitterMetas = head.querySelectorAll('meta[name^="twitter:"]');
   const groups = new Map<string, HTMLElement[]>();
 
   for (const el of twitterMetas) {
@@ -385,9 +403,9 @@ function deduplicateTwitterProperties(root: HTMLElement): void {
 
 // -- Internal param cleaning --
 
-function cleanInternalParams(root: HTMLElement): void {
+function cleanInternalParams(head: HTMLElement): void {
   // Clean canonical href
-  const canonical = root.querySelector('link[rel="canonical"]');
+  const canonical = head.querySelector('link[rel="canonical"]');
   if (canonical) {
     const href = canonical.getAttribute("href");
     if (href) {
@@ -396,7 +414,7 @@ function cleanInternalParams(root: HTMLElement): void {
   }
 
   // Clean og:url
-  const ogUrl = root.querySelector('meta[property="og:url"]');
+  const ogUrl = head.querySelector('meta[property="og:url"]');
   if (ogUrl) {
     const content = ogUrl.getAttribute("content");
     if (content) {
@@ -405,7 +423,7 @@ function cleanInternalParams(root: HTMLElement): void {
   }
 
   // Clean twitter:url
-  const twitterUrl = root.querySelector('meta[name="twitter:url"]');
+  const twitterUrl = head.querySelector('meta[name="twitter:url"]');
   if (twitterUrl) {
     const content = twitterUrl.getAttribute("content");
     if (content) {
@@ -433,11 +451,11 @@ function stripInternalParams(urlStr: string): string {
 // -- R3 --
 
 function fixCanonicalUrl(
-  root: HTMLElement,
+  head: HTMLElement,
   canonicalDomain: string,
   pageUrl: string,
 ): string | null {
-  const canonical = root.querySelector('link[rel="canonical"]');
+  const canonical = head.querySelector('link[rel="canonical"]') ?? null;
 
   if (!canonical) {
     // No <link rel="canonical"> exists. Derive the canonical URL from the
@@ -470,13 +488,13 @@ function fixCanonicalUrl(
 
 // -- R4 --
 
-function syncUrlMeta(root: HTMLElement, canonicalUrl: string): void {
-  const ogUrl = root.querySelector('meta[property="og:url"]');
+function syncUrlMeta(head: HTMLElement, canonicalUrl: string): void {
+  const ogUrl = head.querySelector('meta[property="og:url"]');
   if (ogUrl) {
     ogUrl.setAttribute("content", canonicalUrl);
   }
 
-  const twitterUrl = root.querySelector('meta[name="twitter:url"]');
+  const twitterUrl = head.querySelector('meta[name="twitter:url"]');
   if (twitterUrl) {
     twitterUrl.setAttribute("content", canonicalUrl);
   }
@@ -484,8 +502,8 @@ function syncUrlMeta(root: HTMLElement, canonicalUrl: string): void {
 
 // -- R5 --
 
-function fixBaseTag(root: HTMLElement, canonicalDomain: string): void {
-  const base = root.querySelector("base");
+function fixBaseTag(head: HTMLElement, canonicalDomain: string): void {
+  const base = head.querySelector("base") ?? null;
   if (!base) return;
 
   const href = base.getAttribute("href");
@@ -503,27 +521,21 @@ function fixBaseTag(root: HTMLElement, canonicalDomain: string): void {
 
 // -- R6 --
 
-function ensureCharset(root: HTMLElement): void {
-  const existing = root.querySelector("meta[charset]");
+function ensureCharset(head: HTMLElement): void {
+  const existing = head.querySelector("meta[charset]");
   if (existing) return;
 
   // Also check for <meta http-equiv="Content-Type">
-  const httpEquiv = root.querySelector('meta[http-equiv="Content-Type"]');
+  const httpEquiv = head.querySelector('meta[http-equiv="Content-Type"]');
   if (httpEquiv) return;
-
-  const head = root.querySelector("head");
-  if (!head) return;
 
   const meta = parse('<meta charset="utf-8">');
   head.insertAdjacentHTML("afterbegin", meta.toString());
 }
 
-function ensureViewport(root: HTMLElement): void {
-  const existing = root.querySelector('meta[name="viewport"]');
+function ensureViewport(head: HTMLElement): void {
+  const existing = head.querySelector('meta[name="viewport"]');
   if (existing) return;
-
-  const head = root.querySelector("head");
-  if (!head) return;
 
   head.insertAdjacentHTML(
     "afterbegin",
@@ -650,70 +662,70 @@ function injectMissingMetadata(
   const head = root.querySelector("head");
   if (!head) return;
 
-  // Gather existing values for derivation
-  const title = root.querySelector("title")?.textContent ?? null;
+  // Gather existing values for derivation — strictly from <head>
+  const title = head.querySelector("title")?.textContent ?? null;
   const description =
-    root.querySelector('meta[name="description"]')?.getAttribute("content") ??
+    head.querySelector('meta[name="description"]')?.getAttribute("content") ??
     null;
   const existingOgImage =
-    root.querySelector('meta[property="og:image"]')?.getAttribute("content") ??
+    head.querySelector('meta[property="og:image"]')?.getAttribute("content") ??
     null;
 
   // R20: og:url
-  if (!root.querySelector('meta[property="og:url"]') && canonicalUrl) {
+  if (!head.querySelector('meta[property="og:url"]') && canonicalUrl) {
     appendMeta(head, "property", "og:url", canonicalUrl);
   }
 
   // R21: og:type
-  if (!root.querySelector('meta[property="og:type"]')) {
+  if (!head.querySelector('meta[property="og:type"]')) {
     appendMeta(head, "property", "og:type", "website");
   }
 
   // R22: og:title
-  const existingOgTitle = root.querySelector('meta[property="og:title"]');
+  const existingOgTitle = head.querySelector('meta[property="og:title"]');
   if (!existingOgTitle && title) {
     appendMeta(head, "property", "og:title", title);
   }
 
   // R23: og:description
-  const existingOgDesc = root.querySelector('meta[property="og:description"]');
+  const existingOgDesc = head.querySelector('meta[property="og:description"]');
   if (!existingOgDesc && description) {
     appendMeta(head, "property", "og:description", description);
   }
 
   // R24: og:site_name
-  if (!root.querySelector('meta[property="og:site_name"]')) {
+  if (!head.querySelector('meta[property="og:site_name"]')) {
     appendMeta(head, "property", "og:site_name", canonicalDomain);
   }
 
   // R25: og:locale
-  if (!root.querySelector('meta[property="og:locale"]')) {
+  if (!head.querySelector('meta[property="og:locale"]')) {
     const locale = deriveLocale(root);
     appendMeta(head, "property", "og:locale", locale);
   }
 
   // Now get the og:title and og:description for twitter fallback
   const ogTitleValue =
-    root.querySelector('meta[property="og:title"]')?.getAttribute("content") ??
+    head.querySelector('meta[property="og:title"]')?.getAttribute("content") ??
     null;
   const ogDescValue =
-    root
+    head
       .querySelector('meta[property="og:description"]')
       ?.getAttribute("content") ?? null;
 
   // R26: twitter:card
-  if (!root.querySelector('meta[name="twitter:card"]')) {
+  if (!head.querySelector('meta[name="twitter:card"]')) {
     const cardType = existingOgImage ? "summary_large_image" : "summary";
     appendMeta(head, "name", "twitter:card", cardType);
   }
 
   // R27: twitter:title
-  if (!root.querySelector('meta[name="twitter:title"]') && ogTitleValue) {
+  if (!head.querySelector('meta[name="twitter:title"]') && ogTitleValue) {
     appendMeta(head, "name", "twitter:title", ogTitleValue);
   }
 
   // R27: twitter:description
-  if (!root.querySelector('meta[name="twitter:description"]') && ogDescValue) {
+  if (!head.querySelector('meta[name="twitter:description"]') && ogDescValue) {
     appendMeta(head, "name", "twitter:description", ogDescValue);
   }
 }
@@ -783,10 +795,7 @@ function deriveLocale(root: HTMLElement): string {
 
 // -- Head tag reordering (migrated from RenderEngine) --
 
-function reorderHeadTags(root: HTMLElement): void {
-  const head = root.querySelector("head");
-  if (!head) return;
-
+function reorderHeadTags(head: HTMLElement): void {
   // Collect tags to hoist (in reverse priority order — we'll prepend each)
   const tagsToHoist: HTMLElement[] = [];
 

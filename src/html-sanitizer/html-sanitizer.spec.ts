@@ -280,6 +280,116 @@ describe("R2: meta deduplication", () => {
     const matches = result.match(/property="og:image:alt"/g);
     expect(matches).toHaveLength(1);
   });
+
+  it("deduplicates <title>, preferring the one with text when last is empty", () => {
+    const html = doc({
+      head: `<title>Real Title</title><title></title>`,
+      body: wordsBody(50),
+    });
+    const result = sanitize(html);
+    expect(result).toContain("Real Title");
+    const matches = result.match(/<title>/g);
+    expect(matches).toHaveLength(1);
+  });
+
+  it("deduplicates <title>, preferring the one with text when last has only whitespace", () => {
+    const html = doc({
+      head: `<title>Actual Title</title><title>   </title>`,
+      body: wordsBody(50),
+    });
+    const result = sanitize(html);
+    expect(result).toContain("Actual Title");
+    const matches = result.match(/<title>/g);
+    expect(matches).toHaveLength(1);
+  });
+
+  it("keeps helmet-marked <title> even if empty when no other has text", () => {
+    const html = doc({
+      head: `<title></title><title data-rh="true"></title>`,
+      body: wordsBody(50),
+    });
+    const result = sanitize(html);
+    // helmet wins even if empty, since no other candidate has text either
+    const matches = result.match(/<title/g);
+    expect(matches).toHaveLength(1);
+  });
+
+  it("prefers title with text over empty helmet-marked title when helmet winner is empty", () => {
+    // helmet-marked is the initial winner but it's empty — fallback to first with text
+    const html = doc({
+      head: `<title>Good Title</title><title data-rh="true"></title>`,
+      body: wordsBody(50),
+    });
+    const result = sanitize(html);
+    expect(result).toContain("Good Title");
+    const matches = result.match(/<title>/g);
+    expect(matches).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Head-scoped tag queries — <title>, meta, og, twitter must be from <head>
+// ---------------------------------------------------------------------------
+describe("head-scoped tag queries", () => {
+  it("does NOT let <title> inside SVG in body replace <head> <title>", () => {
+    const html = doc({
+      head: `<title>Page Title</title>`,
+      body: `<svg><title>SVG Icon Title</title></svg><p>Content here with enough words to avoid soft 404 detection for testing purposes</p>`,
+    });
+    const result = sanitize(html);
+    expect(result).toContain("<title>Page Title</title>");
+    // SVG is removed by R15, but even before that the <title> should not interfere
+    expect(result).not.toContain("SVG Icon Title");
+  });
+
+  it("does NOT let <title> inside SVG affect deduplication when no head <title>", () => {
+    const html = doc({
+      head: `<title>Head Title</title>`,
+      body: `<svg><title>Chart Label</title></svg>${wordsBody(50)}`,
+    });
+    const result = sanitize(html);
+    // Only the head title should survive
+    expect(result).toContain("Head Title");
+    expect(result).not.toContain("Chart Label");
+    const titleMatches = result.match(/<title>/g);
+    expect(titleMatches).toHaveLength(1);
+  });
+
+  it("does NOT let body <meta> tags interfere with head og:title deduplication", () => {
+    // Some SPAs mistakenly place meta tags in body
+    const html = `<!DOCTYPE html><html><head><meta property="og:title" content="Head OG Title"><title>Test</title></head><body><meta property="og:title" content="Body OG Title"><p>${Array.from({ length: 50 }, (_, i) => `word${i}`).join(" ")}</p></body></html>`;
+    const result = sanitize(html);
+    // Head og:title should be kept; body meta is outside <head> so it's ignored by dedup
+    expect(result).toContain('content="Head OG Title"');
+  });
+
+  it("does NOT let body <meta name='twitter:card'> prevent head injection", () => {
+    // twitter:card in body should be ignored; sanitizer should inject one in head
+    const html = `<!DOCTYPE html><html><head><title>Test</title></head><body><meta name="twitter:card" content="summary"><p>${Array.from({ length: 50 }, (_, i) => `word${i}`).join(" ")}</p></body></html>`;
+    const result = sanitize(html);
+    // Should still inject twitter:card in head since head didn't have one
+    expect(result).toContain('name="twitter:card"');
+  });
+
+  it("does NOT let body <meta name='description'> interfere with head deduplication", () => {
+    const html = `<!DOCTYPE html><html><head><meta name="description" content="Head desc"><title>Test</title></head><body><meta name="description" content="Body desc"><p>${Array.from({ length: 50 }, (_, i) => `word${i}`).join(" ")}</p></body></html>`;
+    const result = sanitize(html);
+    expect(result).toContain('content="Head desc"');
+  });
+
+  it("does NOT let body <link rel='canonical'> interfere with head canonical", () => {
+    const html = `<!DOCTYPE html><html><head><link rel="canonical" href="https://example.com/page"><title>Test</title></head><body><link rel="canonical" href="https://wrong.com/other"><p>${Array.from({ length: 50 }, (_, i) => `word${i}`).join(" ")}</p></body></html>`;
+    const result = sanitize(html, { canonicalDomain: "example.com" });
+    expect(result).toContain('href="https://example.com/page"');
+  });
+
+  it("does NOT let body twitter:title prevent head twitter:title injection", () => {
+    const html = `<!DOCTYPE html><html><head><title>My Page</title><meta property="og:title" content="OG Title"></head><body><meta name="twitter:title" content="Body Twitter Title"><p>${Array.from({ length: 50 }, (_, i) => `word${i}`).join(" ")}</p></body></html>`;
+    const result = sanitize(html);
+    // Should inject twitter:title from og:title since head has no twitter:title
+    expect(result).toContain('name="twitter:title"');
+    expect(result).toContain('content="OG Title"');
+  });
 });
 
 // ---------------------------------------------------------------------------
