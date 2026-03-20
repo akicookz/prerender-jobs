@@ -2,7 +2,7 @@ import { Browser, ConsoleMessage, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { AppLogger } from "./logger";
 
-const DEFAULT_RENDER_TIMEOUT = 30000; // 30 seconds
+const DEFAULT_RENDER_TIMEOUT = 10000; // 10 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 
 export interface RenderResult {
@@ -56,7 +56,7 @@ export class RenderEngine {
           if (text.includes("preload") && text.includes("crossorigin")) return;
           // Only log errors, not warnings/info
           if (msg.type() === "error") {
-            this._logger.debug("[PageConsole]", msg.type(), text);
+            this._logger.debug(`[PageConsole] ${msg.type()}: ${text}`);
           }
         } catch {
           // ignore
@@ -65,7 +65,7 @@ export class RenderEngine {
       page.on("pageerror", (err: unknown) => {
         if (err instanceof Error) {
           try {
-            this._logger.debug("[PageError]", err?.message || err);
+            this._logger.debug(`[PageError] ${err?.message || err}`);
           } catch {
             // ignore
           }
@@ -98,43 +98,60 @@ export class RenderEngine {
     }
 
     try {
-      await page.setUserAgent({ userAgent: this._userAgent });
-      await page.setExtraHTTPHeaders({
-        "Accept-Language": "en-US,en;q=0.9",
-        [INTERNAL_PRERENDER_HEADER]: "1",
-      });
-
-      await this.injectPrerenderScripts({ page });
-
-      const response = await page.goto(this._url, {
-        waitUntil: "load",
-        timeout: DEFAULT_RENDER_TIMEOUT,
-      });
-      await this.waitForPageReady({ page, url: this._url });
-      if (!response) {
-        throw new Error(`Failed to navigate to ${this._url}`);
-      }
-
-      const html = await page.content();
-      const statusCode = response.status();
-      const xRobotsTag = response.headers()["x-robots-tag"] ?? null;
-      const finalUrl = page.url();
-
-      return {
-        url: this._url,
-        html,
-        statusCode,
-        xRobotsTag,
-        finalUrl,
-      };
+      const result = await Promise.race([
+        this._renderPageInternal(page),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error(`Render timed out after ${DEFAULT_RENDER_TIMEOUT}ms`),
+              ),
+            DEFAULT_RENDER_TIMEOUT,
+          ),
+        ),
+      ]);
+      return result;
     } catch (e) {
       this._logger.error(
         `Failed to render page ${this._url}: ${e instanceof Error ? e.message : String(e)}`,
       );
       throw e;
     } finally {
-      await page.close();
+      await page.close().catch((e) => {
+        this._logger.debug("[Prerender] Failed to close page", e);
+      });
     }
+  }
+
+  private async _renderPageInternal(page: Page): Promise<RenderResult> {
+    await page.setUserAgent({ userAgent: this._userAgent });
+    await page.setExtraHTTPHeaders({
+      "Accept-Language": "en-US,en;q=0.9",
+      [INTERNAL_PRERENDER_HEADER]: "1",
+    });
+
+    await this.injectPrerenderScripts({ page });
+
+    const response = await page.goto(this._url, {
+      waitUntil: "load",
+    });
+    await this.waitForPageReady({ page, url: this._url });
+    if (!response) {
+      throw new Error(`Failed to navigate to ${this._url}`);
+    }
+
+    const html = await page.content();
+    const statusCode = response.status();
+    const xRobotsTag = response.headers()["x-robots-tag"] ?? null;
+    const finalUrl = page.url();
+
+    return {
+      url: this._url,
+      html,
+      statusCode,
+      xRobotsTag,
+      finalUrl,
+    };
   }
 
   private shouldTrackReq({
@@ -308,7 +325,7 @@ export class RenderEngine {
     page.on("requestfailed", settle);
 
     // Readiness detection constants
-    const HARD_TIMEOUT_MS = 15000;
+    const HARD_TIMEOUT_MS = 10000;
     const NETWORK_QUIET_MS = 500;
     const DOM_STABLE_MS = 300;
     const POLL_INTERVAL_MS = 100;
@@ -350,9 +367,6 @@ export class RenderEngine {
 
         // Hard timeout reached, take snapshot
         if (elapsed >= HARD_TIMEOUT_MS) {
-          this._logger.debug(
-            "[Prerender] Hard timeout reached, taking snapshot",
-          );
           this._logger.debug(
             "[Prerender] Hard timeout reached, taking snapshot",
           );

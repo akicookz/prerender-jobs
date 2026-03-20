@@ -12,6 +12,7 @@ export class AppLogger {
     return new AppLogger(
       createLogger({
         transports: [new transports.Console()],
+        level: process.env.LOG_LEVEL || "info",
       }),
       prefix,
     );
