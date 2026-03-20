@@ -2,7 +2,7 @@ import { Browser, ConsoleMessage, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { AppLogger } from "./logger";
 
-const DEFAULT_RENDER_TIMEOUT = 10000; // 10 seconds
+const DEFAULT_RENDER_TIMEOUT = 15000; // 15 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 
 export interface RenderResult {
@@ -325,7 +325,7 @@ export class RenderEngine {
     page.on("requestfailed", settle);
 
     // Readiness detection constants
-    const HARD_TIMEOUT_MS = 10000;
+    const HARD_TIMEOUT_MS = 15000;
     const NETWORK_QUIET_MS = 500;
     const DOM_STABLE_MS = 300;
     const POLL_INTERVAL_MS = 100;
