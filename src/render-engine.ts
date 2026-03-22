@@ -4,6 +4,7 @@ import { AppLogger } from "./logger";
 
 const DEFAULT_RENDER_TIMEOUT = 15000; // 15 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
+const MAX_NAVIGATIONS = 5;
 
 export interface RenderResult {
   url: string;
@@ -60,6 +61,17 @@ export class RenderEngine {
           }
         } catch {
           // ignore
+        }
+      });
+      page.on("error", (err: unknown) => {
+        if (err instanceof Error) {
+          try {
+            this._logger.debug(
+              `[PageError] ${err?.message || err} - ${this._url}`,
+            );
+          } catch {
+            // ignore
+          }
         }
       });
       page.on("pageerror", (err: unknown) => {
@@ -129,8 +141,20 @@ export class RenderEngine {
       "Accept-Language": "en-US,en;q=0.9",
       [INTERNAL_PRERENDER_HEADER]: "1",
     });
-
     await this.injectPrerenderScripts({ page });
+
+    // Detect navigation loops (e.g., infinite redirect between routes)
+    let navigationCount = 0;
+    page.on("framenavigated", (frame) => {
+      this._logger.debug(`[FrameNavigated] ${frame.url()}`);
+      navigationCount++;
+      if (navigationCount > MAX_NAVIGATIONS) {
+        this._logger.debug(
+          `[Prerender] Navigation loop detected (${navigationCount} navigations), aborting JS execution`,
+        );
+        void page.close().catch(() => void 0);
+      }
+    });
 
     const response = await page.goto(this._url, {
       waitUntil: "load",
@@ -138,6 +162,12 @@ export class RenderEngine {
     await this.waitForPageReady({ page, url: this._url });
     if (!response) {
       throw new Error(`Failed to navigate to ${this._url}`);
+    }
+
+    if (navigationCount > MAX_NAVIGATIONS) {
+      throw new Error(
+        `Navigation loop detected for ${this._url}: ${navigationCount} navigations (final URL: ${page.url()})`,
+      );
     }
 
     const html = await page.content();
@@ -223,13 +253,19 @@ export class RenderEngine {
 
   private async checkAppSignal({ page }: { page: Page }): Promise<boolean> {
     try {
-      return await page.evaluate(() => {
-        // @ts-expect-error - custom window properties
-        const ready = window.prerenderReady as boolean;
-        // @ts-expect-error - custom window properties
-        const snapshot = window.htmlSnapshot as boolean;
-        return ready === true || snapshot === true;
-      });
+      const result = await Promise.race([
+        page.evaluate(() => {
+          // @ts-expect-error - custom window properties
+          const ready = window.prerenderReady as boolean;
+          // @ts-expect-error - custom window properties
+          const snapshot = window.htmlSnapshot as boolean;
+          return ready === true || snapshot === true;
+        }),
+        new Promise<boolean>((resolve) =>
+          setTimeout(() => resolve(false), 1000),
+        ),
+      ]);
+      return result;
     } catch {
       return false;
     }
@@ -237,10 +273,16 @@ export class RenderEngine {
 
   private async getLastDomChange({ page }: { page: Page }): Promise<number> {
     try {
-      return await page.evaluate(() => {
-        // @ts-expect-error - custom window properties
-        return (window.__lastDomChange ?? Date.now()) as number;
-      });
+      const result = await Promise.race([
+        page.evaluate(() => {
+          // @ts-expect-error - custom window properties
+          return (window.__lastDomChange ?? Date.now()) as number;
+        }),
+        new Promise<number>((resolve) =>
+          setTimeout(() => resolve(Date.now()), 1000),
+        ),
+      ]);
+      return result;
     } catch {
       return Date.now();
     }
@@ -337,16 +379,23 @@ export class RenderEngine {
       domStableSince: null,
     };
 
-    let pendingTimeout: NodeJS.Timeout | null = null;
-
     return new Promise<string>((resolve, reject) => {
       let settled = false;
+      let pendingTimeout: NodeJS.Timeout | null = null;
 
+      const cleanup = () => {
+        if (pendingTimeout) {
+          clearTimeout(pendingTimeout);
+          pendingTimeout = null;
+        }
+        this._logger.debug(`CLEANUP: ${Date.now()}`);
+      };
       const settleResolve = (value: string) => {
         if (settled) {
           return;
         }
         settled = true;
+        cleanup();
         resolve(value);
       };
       const settleReject = (error: Error) => {
@@ -354,10 +403,12 @@ export class RenderEngine {
           return;
         }
         settled = true;
+        cleanup();
         reject(error);
       };
 
       const tick = async () => {
+        this._logger.debug(`TICK STARTED: ${Date.now()}`);
         if (settled) {
           return;
         }
@@ -428,10 +479,6 @@ export class RenderEngine {
         );
       };
       tick().catch((e: Error) => settleReject(e));
-    }).finally(() => {
-      if (pendingTimeout) {
-        clearTimeout(pendingTimeout);
-      }
     });
   }
 }

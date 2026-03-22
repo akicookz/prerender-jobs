@@ -402,12 +402,10 @@ async function runPipeline({
 
 async function runPipelineBatches({
   concurrency,
-  browser,
   urlsToRender,
   config,
 }: {
   concurrency: number;
-  browser: Browser;
   config: Configuration;
   urlsToRender: string[];
 }): Promise<Map<string, PipelineResult>> {
@@ -420,22 +418,28 @@ async function runPipelineBatches({
   }
   let processedCount = 0;
   for (let i = 0; i < urlsToRender.length; i += concurrency) {
-    logger.info(
-      `Start batch ${i / concurrency + 1} of ${totalNumberOfBatches}`,
-    );
-    const batchUrls = urlsToRender.slice(i, i + concurrency);
-    const batchResults = await Promise.all(
-      batchUrls.map((url, index) =>
-        runPipeline({
-          pipelineNumber: processedCount + index + 1,
-          urlToRender: url,
-          config,
-          browser,
-        }),
-      ),
-    );
-    pipelineResults.push(...batchResults);
-    processedCount += batchUrls.length;
+    const batchNumber = i / concurrency + 1;
+    logger.info(`Start batch ${batchNumber} of ${totalNumberOfBatches}`);
+    const browser = await launchBrowser();
+    try {
+      const batchUrls = urlsToRender.slice(i, i + concurrency);
+      const batchResults = await Promise.all(
+        batchUrls.map((url, index) =>
+          runPipeline({
+            pipelineNumber: processedCount + index + 1,
+            urlToRender: url,
+            config,
+            browser,
+          }),
+        ),
+      );
+      pipelineResults.push(...batchResults);
+      processedCount += batchUrls.length;
+    } finally {
+      await browser.close().catch((e) => {
+        logger.debug(`Failed to close browser for batch ${batchNumber}`, e);
+      });
+    }
   }
 
   const resultMap = new Map<string, PipelineResult>();
@@ -542,13 +546,9 @@ async function main({ config }: { config: Configuration }): Promise<void> {
     sitemapUrl = result.sitemapUrl;
   }
 
-  // STEP 2 : Launch browser
-  const browser = await launchBrowser();
-
-  // STEP 3 : Run the pipeline batches
+  // STEP 2 : Run the pipeline batches
   const urlResultMap = await runPipelineBatches({
     concurrency: config.concurrency,
-    browser,
     urlsToRender,
     config,
   });
