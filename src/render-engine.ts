@@ -147,6 +147,11 @@ export class RenderEngine {
     let navigationCount = 0;
     page.on("framenavigated", (frame) => {
       this._logger.debug(`[FrameNavigated] ${frame.url()}`);
+      const frameHost = getHostname(frame.url());
+      const targetHost = getHostname(this._url);
+      if (frameHost !== targetHost) {
+        return;
+      }
       navigationCount++;
       if (navigationCount > MAX_NAVIGATIONS) {
         this._logger.debug(
