@@ -44,9 +44,10 @@ export class KvLoader {
         },
       );
       if (result === null) {
+        this._logger.error(`KV bulkUpdate returned null — treating all ${kvPairs.length} keys as unsuccessful`);
         return {
           successfulKeyCount: 0,
-          unsuccessfulKeys: [],
+          unsuccessfulKeys: kvPairs.map((pair) => pair.key),
         };
       }
       return {
@@ -54,10 +55,10 @@ export class KvLoader {
         unsuccessfulKeys: result.unsuccessful_keys ?? [],
       };
     } catch (e) {
-      this._logger.error(`Failed to upload KV records`, e);
+      this._logger.error(`Failed to upload KV records — treating all ${kvPairs.length} keys as unsuccessful`, e);
       return {
         successfulKeyCount: 0,
-        unsuccessfulKeys: [],
+        unsuccessfulKeys: kvPairs.map((pair) => pair.key),
       };
     }
   }
