@@ -252,10 +252,7 @@ async function reportResult({
           },
         ),
         new Promise((_, reject) =>
-          setTimeout(
-            () => reject(new Error("Telegram send timeout")),
-            10000,
-          ),
+          setTimeout(() => reject(new Error("Telegram send timeout")), 10000),
         ),
       ]);
       logger.info(`Result sent to Telegram successfully`);
@@ -754,10 +751,7 @@ main()
             },
           ),
           new Promise((_, reject) =>
-            setTimeout(
-              () => reject(new Error("Telegram send timeout")),
-              10000,
-            ),
+            setTimeout(() => reject(new Error("Telegram send timeout")), 10000),
           ),
         ]);
         logger.info(`Error sent to Telegram successfully`);

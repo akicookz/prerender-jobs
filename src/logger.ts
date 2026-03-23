@@ -1,4 +1,4 @@
-import { Logger, createLogger, transports } from "winston";
+import { Logger, createLogger, transports, format } from "winston";
 
 export const INDENT = "  ";
 
@@ -13,6 +13,8 @@ export class AppLogger {
       createLogger({
         transports: [new transports.Console()],
         level: process.env.LOG_LEVEL || "info",
+        format:
+          process.env.LOG_LEVEL === "debug" ? format.simple() : format.json(),
       }),
       prefix,
     );
