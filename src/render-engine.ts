@@ -52,75 +52,18 @@ export class RenderEngine {
     for (let attempt = 1; attempt <= MAX_RENDER_ATTEMPTS; attempt++) {
       const page = await this._browser.newPage();
 
-      // Set up page event listeners for debugging (filtered to reduce noise)
-      try {
-        page.on("console", (msg: ConsoleMessage) => {
-          try {
-            const text = msg.text();
-            // Skip noisy warnings about preload/crossorigin mismatches
-            if (text.includes("preload") && text.includes("crossorigin")) return;
-            // Only log errors, not warnings/info
-            if (msg.type() === "error") {
-              this._logger.debug(`[PageConsole] ${msg.type()}: ${text}`);
-            }
-          } catch {
-            // ignore
-          }
-        });
-        page.on("error", (err: unknown) => {
-          if (err instanceof Error) {
-            try {
-              this._logger.debug(
-                `[PageError] ${err?.message || err} - ${this._url}`,
-              );
-            } catch {
-              // ignore
-            }
-          }
-        });
-        page.on("pageerror", (err: unknown) => {
-          if (err instanceof Error) {
-            try {
-              this._logger.debug(`[PageError] ${err?.message || err}`);
-            } catch {
-              // ignore
-            }
-          }
-        });
-        page.on("requestfailed", (req: HTTPRequest) => {
-          try {
-            const errorText = req.failure()?.errorText || "";
-            // Skip non-critical failures (fonts, ORB blocks, analytics)
-            if (
-              errorText.includes("ERR_BLOCKED_BY_ORB") ||
-              errorText.includes("ERR_ABORTED") ||
-              req.url().includes("fonts.googleapis.com") ||
-              req.url().includes("fonts.gstatic.com") ||
-              req.url().includes("analytics") ||
-              req.url().includes("gtag")
-            ) {
-              return;
-            }
-            this._logger.debug("[RequestFailed]", req.url(), errorText);
-          } catch {
-            // ignore
-          }
-        });
-      } catch (e) {
-        this._logger.debug(
-          "[Prerender] Failed to attach page event listeners",
-          e,
-        );
-      }
+      this.attachDebugListeners(page);
 
       try {
         return await Promise.race([
-          this._renderPageInternal(page),
+          this.renderPageInternal(page),
           new Promise<never>((_, reject) =>
             setTimeout(
               () =>
                 reject(
-                  new Error(`Render timed out after ${DEFAULT_RENDER_TIMEOUT}ms`),
+                  new Error(
+                    `Render timed out after ${DEFAULT_RENDER_TIMEOUT}ms`,
+                  ),
                 ),
               DEFAULT_RENDER_TIMEOUT,
             ),
@@ -154,6 +97,72 @@ export class RenderEngine {
       : new Error(`Failed to render page ${this._url}`);
   }
 
+  private attachDebugListeners(page: Page): void {
+    // Set up page event listeners for debugging (filtered to reduce noise)
+    try {
+      page.on("console", (msg: ConsoleMessage) => {
+        try {
+          const text = msg.text();
+          // Skip noisy warnings about preload/crossorigin mismatches
+          if (text.includes("preload") && text.includes("crossorigin")) return;
+          // Only log errors, not warnings/info
+          if (msg.type() === "error") {
+            this._logger.debug(
+              `[PageConsole] ${msg.type()}: ${text} : ${this._url}`,
+            );
+          }
+        } catch {
+          // ignore
+        }
+      });
+      page.on("error", (err: unknown) => {
+        if (err instanceof Error) {
+          try {
+            this._logger.debug(
+              `[PageError] ${err?.message || err} - ${this._url}`,
+            );
+          } catch {
+            // ignore
+          }
+        }
+      });
+      page.on("pageerror", (err: unknown) => {
+        if (err instanceof Error) {
+          try {
+            this._logger.debug(`[PageError] ${err?.message || err}`);
+          } catch {
+            // ignore
+          }
+        }
+      });
+      page.on("requestfailed", (req: HTTPRequest) => {
+        try {
+          const errorText = req.failure()?.errorText || "";
+          // Skip non-critical failures (fonts, ORB blocks, analytics)
+          if (
+            errorText.includes("ERR_BLOCKED_BY_ORB") ||
+            errorText.includes("ERR_ABORTED") ||
+            req.url().includes("fonts.googleapis.com") ||
+            req.url().includes("fonts.gstatic.com") ||
+            req.url().includes("fonts.reown.com") ||
+            req.url().includes("analytics") ||
+            req.url().includes("gtag")
+          ) {
+            return;
+          }
+          this._logger.debug("[RequestFailed]", req.url(), errorText);
+        } catch {
+          // ignore
+        }
+      });
+    } catch (e) {
+      this._logger.debug(
+        "[Prerender] Failed to attach page event listeners",
+        e,
+      );
+    }
+  }
+
   private isFrameDetachedError(e: unknown): boolean {
     const msg = e instanceof Error ? e.message : String(e);
     return (
@@ -165,21 +174,24 @@ export class RenderEngine {
     );
   }
 
-  private async _renderPageInternal(page: Page): Promise<RenderResult> {
+  private async renderPageInternal(page: Page): Promise<RenderResult> {
     await page.setViewport({ width: 1280, height: 720 });
     await page.setUserAgent({ userAgent: this._userAgent });
     await page.setExtraHTTPHeaders({
       "Accept-Language": "en-US,en;q=0.9",
-      [INTERNAL_PRERENDER_HEADER]: "1",
     });
     await this.injectPrerenderScripts({ page });
+
+    // Intercept requests to add the internal header only to same-origin requests,
+    // avoiding CORS preflight failures on third-party domains.
+    const targetHost = getHostname(this._url) ?? "";
+    await page.setRequestInterception(true);
 
     // Detect navigation loops (e.g., infinite redirect between routes)
     let navigationCount = 0;
     page.on("framenavigated", (frame) => {
       this._logger.debug(`[FrameNavigated] ${frame.url()}`);
       const frameHost = getHostname(frame.url());
-      const targetHost = getHostname(this._url);
       if (frameHost !== targetHost) {
         return;
       }
@@ -192,12 +204,55 @@ export class RenderEngine {
       }
     });
 
+    // Attach request tracker before navigation so requests during page.goto are captured
+    const firstPartyReqPending = new Set<HTTPRequest>();
+
+    page.on("request", (req: HTTPRequest) => {
+      // Add the internal prerender header only to same-origin requests
+      const reqHost = getHostname(req.url());
+      const headers = req.headers();
+      if (reqHost === targetHost) {
+        headers[INTERNAL_PRERENDER_HEADER] = "1";
+      }
+      req.continue({ headers }).catch(() => {
+        // If continue fails (e.g. request already handled), ignore
+        return void 0;
+      });
+
+      try {
+        if (this.shouldTrackReq({ req, targetHost })) {
+          firstPartyReqPending.add(req);
+        }
+      } catch {
+        void 0;
+      }
+    });
+
+    const settle = (req: HTTPRequest) => {
+      this._logger.debug(
+        `[Prerender] Request ${req.url()} settled for ${this._url}`,
+      );
+      try {
+        firstPartyReqPending.delete(req);
+      } catch {
+        void 0;
+      }
+    };
+    page.on("requestfinished", settle);
+    page.on("requestfailed", settle);
+
+    const navStartTimestamp = Date.now();
+    this._logger.debug(`[Prerender] Navigating to ${this._url}`);
     const response = await page.goto(this._url, {
       waitUntil: "load",
       timeout: 15000,
     });
+    const navEndTimestamp = Date.now();
+    this._logger.debug(
+      `[Prerender] Navigation completed in ${navEndTimestamp - navStartTimestamp}ms for ${this._url}`,
+    );
 
-    await this.waitForPageReady({ page, url: this._url });
+    await this.waitForPageReady({ page, firstPartyReqPending });
     if (!response) {
       throw new Error(`Failed to navigate to ${this._url}`);
     }
@@ -206,9 +261,7 @@ export class RenderEngine {
 
     // Don't cache server error pages — they're transient origin failures
     if (statusCode >= 500) {
-      throw new Error(
-        `Origin returned ${statusCode} for ${this._url}`,
-      );
+      throw new Error(`Origin returned ${statusCode} for ${this._url}`);
     }
 
     if (navigationCount > MAX_NAVIGATIONS) {
@@ -283,6 +336,7 @@ export class RenderEngine {
       "googletagmanager.com",
       "fonts.googleapis.com",
       "fonts.gstatic.com",
+      "fonts.reown.com",
       "www.googletagmanager.com",
       "analytics.google.com",
       "facebook.com",
@@ -371,32 +425,34 @@ export class RenderEngine {
             // @ts-expect-error - custom window properties
             window.__lastDomChange = Date.now();
 
-            // Disable CSS animations/transitions to prevent continuous DOM mutations
-            const style = document.createElement("style");
-            style.textContent =
-              "*, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; animation-delay: 0s !important; transition-delay: 0s !important; }";
-            (document.head || document.documentElement).appendChild(style);
-
-            const setupObserver = () => {
-              if (!document.documentElement) {
-                return;
+            const setup = () => {
+              // Disable CSS animations/transitions to prevent continuous DOM mutations
+              const head = document.head || document.documentElement;
+              if (head) {
+                const style = document.createElement("style");
+                style.textContent =
+                  "*, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; animation-delay: 0s !important; transition-delay: 0s !important; }";
+                head.appendChild(style);
               }
-              const observer = new MutationObserver(() => {
-                // @ts-expect-error - custom window properties
-                window.__lastDomChange = Date.now();
-              });
-              observer.observe(document.documentElement, {
-                childList: true,
-                subtree: true,
-                attributes: true,
-                characterData: true,
-              });
+
+              if (document.documentElement) {
+                const observer = new MutationObserver(() => {
+                  // @ts-expect-error - custom window properties
+                  window.__lastDomChange = Date.now();
+                });
+                observer.observe(document.documentElement, {
+                  childList: true,
+                  subtree: true,
+                  attributes: true,
+                  characterData: true,
+                });
+              }
             };
 
             if (document.documentElement) {
-              setupObserver();
+              setup();
             } else {
-              document.addEventListener("DOMContentLoaded", setupObserver);
+              document.addEventListener("DOMContentLoaded", setup);
             }
           } catch (e) {
             console.error("[Prerender] Failed to inject prerender scripts", e);
@@ -410,36 +466,12 @@ export class RenderEngine {
 
   private async waitForPageReady({
     page,
-    url,
+
+    firstPartyReqPending,
   }: {
     page: Page;
-    url: string;
+    firstPartyReqPending: Set<HTTPRequest>;
   }): Promise<string> {
-    // Track first-party requests for network idle detection
-    const firstPartyReqPending = new Set<HTTPRequest>();
-
-    const targetHost = getHostname(url) ?? "";
-
-    page.on("request", (req: HTTPRequest) => {
-      try {
-        if (this.shouldTrackReq({ req, targetHost })) {
-          firstPartyReqPending.add(req);
-        }
-      } catch {
-        void 0;
-      }
-    });
-
-    const settle = (req: HTTPRequest) => {
-      try {
-        firstPartyReqPending.delete(req);
-      } catch {
-        void 0;
-      }
-    };
-    page.on("requestfinished", settle);
-    page.on("requestfailed", settle);
-
     // Readiness detection constants
     const HARD_TIMEOUT_MS = 15000;
     const NETWORK_QUIET_MS = 500;
@@ -462,7 +494,6 @@ export class RenderEngine {
           clearTimeout(pendingTimeout);
           pendingTimeout = null;
         }
-        this._logger.debug(`CLEANUP: ${Date.now()}`);
       };
       const settleResolve = (value: string) => {
         if (settled) {
@@ -482,7 +513,6 @@ export class RenderEngine {
       };
 
       const tick = async () => {
-        this._logger.debug(`TICK STARTED: ${Date.now()}`);
         if (settled) {
           return;
         }
