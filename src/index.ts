@@ -62,12 +62,11 @@ interface ReportResultBody {
 }
 
 const logger = AppLogger.register({ prefix: "index" });
-const config = getConfig();
 
 function getConfig(): Configuration {
   try {
     const config = loadConfig();
-    logger.info("Configuration loaded successfully:");
+    logger.info("Configuration loaded successfully");
     return config;
   } catch (e) {
     logger.error(
@@ -241,16 +240,24 @@ async function reportResult({
       );
     }
     try {
-      await telegramBot.sendMessage(
-        config.telegramChatId,
-        `\`\`\`json\n${JSON.stringify(resultBodyForTelegram, null, 2).slice(
-          0,
-          4096,
-        )}\n\`\`\``, // Telegram message length limit is 4096 characters
-        {
-          parse_mode: "MarkdownV2",
-        },
-      );
+      await Promise.race([
+        telegramBot.sendMessage(
+          config.telegramChatId,
+          `\`\`\`json\n${JSON.stringify(resultBodyForTelegram, null, 2).slice(
+            0,
+            4096,
+          )}\n\`\`\``, // Telegram message length limit is 4096 characters
+          {
+            parse_mode: "MarkdownV2",
+          },
+        ),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("Telegram send timeout")),
+            10000,
+          ),
+        ),
+      ]);
       logger.info(`Result sent to Telegram successfully`);
     } catch (e) {
       logger.error(`Failed to send result to Telegram`, e);
@@ -270,6 +277,7 @@ async function reportResult({
           "Content-Type": "application/json",
           "x-webhook-signature": config.webhookSignature ?? "",
         },
+        signal: AbortSignal.timeout(15000),
       });
       if (!response.ok) {
         logger.error(`Failed to call webhook: ${response.statusText}`);
@@ -285,7 +293,15 @@ async function launchBrowser(): Promise<Browser> {
   try {
     const browser = await puppeteer.launch({
       executablePath: "/usr/bin/chromium",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-extensions",
+        "--no-first-run",
+        "--disable-background-networking",
+      ],
     });
     logger.info("Browser launched successfully");
     return browser;
@@ -404,11 +420,13 @@ async function runPipelineBatches({
   concurrency,
   urlsToRender,
   config,
+  launchBrowserFn,
 }: {
   concurrency: number;
   config: Configuration;
   urlsToRender: string[];
-}): Promise<Map<string, PipelineResult>> {
+  launchBrowserFn: () => Promise<Browser>;
+}): Promise<{ resultMap: Map<string, PipelineResult>; browser: Browser }> {
   const pipelineResults: PipelineResult[] = [];
   const totalNumberOfBatches = Math.ceil(urlsToRender.length / concurrency);
   logger.info(`Running pipeline batches with concurrency: ${concurrency}`);
@@ -416,12 +434,67 @@ async function runPipelineBatches({
   if (config.skipCacheSync) {
     logger.info(`${INDENT}↳ SKIPPING CACHING: SKIP_CACHE_SYNC is true`);
   }
+
+  const MAX_BROWSER_RECOVERIES = 3;
+  let browserRecoveries = 0;
+  let browser = await launchBrowserFn();
+  let browserDisconnected = false;
+
+  browser.on("disconnected", () => {
+    browserDisconnected = true;
+    logger.warn("[Browser] Browser disconnected unexpectedly");
+  });
+
   let processedCount = 0;
-  for (let i = 0; i < urlsToRender.length; i += concurrency) {
-    const batchNumber = i / concurrency + 1;
-    logger.info(`Start batch ${batchNumber} of ${totalNumberOfBatches}`);
-    const browser = await launchBrowser();
-    try {
+  try {
+    for (let i = 0; i < urlsToRender.length; i += concurrency) {
+      // Recover the shared browser before the next batch starts if Chromium died.
+      if (browserDisconnected) {
+        if (browserRecoveries >= MAX_BROWSER_RECOVERIES) {
+          logger.error(
+            `[Browser] Max browser recoveries (${MAX_BROWSER_RECOVERIES}) exceeded; aborting remaining batches`,
+          );
+          for (let j = i; j < urlsToRender.length; j++) {
+            pipelineResults.push({
+              url: urlsToRender[j]!,
+              isRendered: false,
+              isAnalyzed: false,
+              isCachedToR2: false,
+              isCachedToKv: false,
+            });
+          }
+          break;
+        }
+
+        browserRecoveries++;
+        logger.warn(
+          `[Browser] Relaunching browser (recovery ${browserRecoveries}/${MAX_BROWSER_RECOVERIES})`,
+        );
+        try {
+          browser = await launchBrowserFn();
+          browserDisconnected = false;
+          browser.on("disconnected", () => {
+            browserDisconnected = true;
+            logger.warn("[Browser] Browser disconnected unexpectedly");
+          });
+        } catch (e) {
+          logger.error("[Browser] Failed to relaunch browser", e);
+          for (let j = i; j < urlsToRender.length; j++) {
+            pipelineResults.push({
+              url: urlsToRender[j]!,
+              isRendered: false,
+              isAnalyzed: false,
+              isCachedToR2: false,
+              isCachedToKv: false,
+            });
+          }
+          break;
+        }
+      }
+
+      logger.info(
+        `Start batch ${i / concurrency + 1} of ${totalNumberOfBatches}`,
+      );
       const batchUrls = urlsToRender.slice(i, i + concurrency);
       const batchResults = await Promise.all(
         batchUrls.map((url, index) =>
@@ -435,11 +508,12 @@ async function runPipelineBatches({
       );
       pipelineResults.push(...batchResults);
       processedCount += batchUrls.length;
-    } finally {
-      await browser.close().catch((e) => {
-        logger.debug(`Failed to close browser for batch ${batchNumber}`, e);
-      });
     }
+  } catch (e) {
+    await browser.close().catch((closeError) => {
+      logger.debug("Failed to close browser after pipeline error", closeError);
+    });
+    throw e;
   }
 
   const resultMap = new Map<string, PipelineResult>();
@@ -447,7 +521,7 @@ async function runPipelineBatches({
     resultMap.set(result.url, result);
   });
 
-  return resultMap;
+  return { resultMap, browser };
 }
 
 async function bulkUpdateKv({
@@ -530,7 +604,8 @@ async function bulkUpdateKv({
   };
 }
 
-async function main({ config }: { config: Configuration }): Promise<void> {
+async function main(): Promise<void> {
+  const config = getConfig();
   const startedAt = Date.now();
 
   // STEP 1 : Prepare target URLs
@@ -546,12 +621,21 @@ async function main({ config }: { config: Configuration }): Promise<void> {
     sitemapUrl = result.sitemapUrl;
   }
 
-  // STEP 2 : Run the pipeline batches
-  const urlResultMap = await runPipelineBatches({
+  // STEP 2+3 : Run the pipeline batches with a shared browser.
+  const { resultMap: urlResultMap, browser } = await runPipelineBatches({
     concurrency: config.concurrency,
     urlsToRender,
     config,
+    launchBrowserFn: launchBrowser,
   });
+
+  // Always close the browser after rendering, even if subsequent steps fail
+  try {
+    await browser.close();
+    logger.info("Browser closed");
+  } catch (e) {
+    logger.warn("Failed to close browser:", e);
+  }
 
   if (config.skipCacheSync) {
     logger.info(`SKIPPING KV UPLOAD: SKIP_CACHE_SYNC is true`);
@@ -615,8 +699,7 @@ async function main({ config }: { config: Configuration }): Promise<void> {
 
   const completedAt = Date.now();
 
-  // STEP 5 : Report result
-
+  // STEP 6 : Report result
   await reportResult({
     config,
     urlResultMap,
@@ -633,7 +716,13 @@ async function main({ config }: { config: Configuration }): Promise<void> {
   });
 }
 
-main({ config })
+// Catch unhandled rejections from stray async errors (Node 22 terminates on these)
+process.on("unhandledRejection", (reason) => {
+  logger.error("[FATAL] Unhandled rejection:", reason);
+  process.exit(1);
+});
+
+main()
   .then(() => {
     process.exit(0);
   })
@@ -641,25 +730,36 @@ main({ config })
     logger.error(
       `Failed to run main: ${error instanceof Error ? error.message : String(error)}`,
     );
-    if (config.telegramBotToken && config.telegramChatId) {
-      const telegramBot = new TelegramBot(config.telegramBotToken);
+    // Read Telegram config directly from env as fallback (config may not have loaded)
+    const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
+    const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+    if (telegramBotToken && telegramChatId) {
+      const telegramBot = new TelegramBot(telegramBotToken);
       try {
-        await telegramBot.sendMessage(
-          config.telegramChatId,
-          `Failed to execute the job:\n\`\`\`json\n${JSON.stringify(
+        await Promise.race([
+          telegramBot.sendMessage(
+            telegramChatId,
+            `Failed to execute the job:\n\`\`\`json\n${JSON.stringify(
+              {
+                google_cloud_execution_id:
+                  process.env.CLOUD_RUN_EXECUTION ?? "local",
+                failReason:
+                  error instanceof Error ? error.message : String(error),
+              },
+              null,
+              2,
+            )}\n\`\`\``.slice(0, 4096),
             {
-              google_cloud_execution_id:
-                process.env.CLOUD_RUN_EXECUTION ?? "local",
-              failReason:
-                error instanceof Error ? error.message : String(error),
+              parse_mode: "MarkdownV2",
             },
-            null,
-            2,
-          )}\n\`\`\``.slice(0, 4096), // Telegram message length limit is 4096 characters
-          {
-            parse_mode: "MarkdownV2",
-          },
-        );
+          ),
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("Telegram send timeout")),
+              10000,
+            ),
+          ),
+        ]);
         logger.info(`Error sent to Telegram successfully`);
       } catch (e) {
         logger.error(

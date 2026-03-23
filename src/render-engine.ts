@@ -5,6 +5,7 @@ import { AppLogger } from "./logger";
 const DEFAULT_RENDER_TIMEOUT = 15000; // 15 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 const MAX_NAVIGATIONS = 5;
+const MAX_RENDER_ATTEMPTS = 2;
 
 export interface RenderResult {
   url: string;
@@ -46,96 +47,126 @@ export class RenderEngine {
   }
 
   async renderPage(): Promise<RenderResult> {
-    const page = await this._browser.newPage();
+    let lastError: unknown;
 
-    // Set up page event listeners for debugging (filtered to reduce noise)
-    try {
-      page.on("console", (msg: ConsoleMessage) => {
-        try {
-          const text = msg.text();
-          // Skip noisy warnings about preload/crossorigin mismatches
-          if (text.includes("preload") && text.includes("crossorigin")) return;
-          // Only log errors, not warnings/info
-          if (msg.type() === "error") {
-            this._logger.debug(`[PageConsole] ${msg.type()}: ${text}`);
-          }
-        } catch {
-          // ignore
-        }
-      });
-      page.on("error", (err: unknown) => {
-        if (err instanceof Error) {
+    for (let attempt = 1; attempt <= MAX_RENDER_ATTEMPTS; attempt++) {
+      const page = await this._browser.newPage();
+
+      // Set up page event listeners for debugging (filtered to reduce noise)
+      try {
+        page.on("console", (msg: ConsoleMessage) => {
           try {
-            this._logger.debug(
-              `[PageError] ${err?.message || err} - ${this._url}`,
-            );
+            const text = msg.text();
+            // Skip noisy warnings about preload/crossorigin mismatches
+            if (text.includes("preload") && text.includes("crossorigin")) return;
+            // Only log errors, not warnings/info
+            if (msg.type() === "error") {
+              this._logger.debug(`[PageConsole] ${msg.type()}: ${text}`);
+            }
           } catch {
             // ignore
           }
-        }
-      });
-      page.on("pageerror", (err: unknown) => {
-        if (err instanceof Error) {
+        });
+        page.on("error", (err: unknown) => {
+          if (err instanceof Error) {
+            try {
+              this._logger.debug(
+                `[PageError] ${err?.message || err} - ${this._url}`,
+              );
+            } catch {
+              // ignore
+            }
+          }
+        });
+        page.on("pageerror", (err: unknown) => {
+          if (err instanceof Error) {
+            try {
+              this._logger.debug(`[PageError] ${err?.message || err}`);
+            } catch {
+              // ignore
+            }
+          }
+        });
+        page.on("requestfailed", (req: HTTPRequest) => {
           try {
-            this._logger.debug(`[PageError] ${err?.message || err}`);
+            const errorText = req.failure()?.errorText || "";
+            // Skip non-critical failures (fonts, ORB blocks, analytics)
+            if (
+              errorText.includes("ERR_BLOCKED_BY_ORB") ||
+              errorText.includes("ERR_ABORTED") ||
+              req.url().includes("fonts.googleapis.com") ||
+              req.url().includes("fonts.gstatic.com") ||
+              req.url().includes("analytics") ||
+              req.url().includes("gtag")
+            ) {
+              return;
+            }
+            this._logger.debug("[RequestFailed]", req.url(), errorText);
           } catch {
             // ignore
           }
-        }
-      });
-      page.on("requestfailed", (req: HTTPRequest) => {
-        try {
-          const errorText = req.failure()?.errorText || "";
-          // Skip non-critical failures (fonts, ORB blocks, analytics)
-          if (
-            errorText.includes("ERR_BLOCKED_BY_ORB") ||
-            errorText.includes("ERR_ABORTED") ||
-            req.url().includes("fonts.googleapis.com") ||
-            req.url().includes("fonts.gstatic.com") ||
-            req.url().includes("analytics") ||
-            req.url().includes("gtag")
-          ) {
-            return;
-          }
-          this._logger.debug("[RequestFailed]", req.url(), errorText);
-        } catch {
-          // ignore
-        }
-      });
-    } catch (e) {
-      this._logger.debug(
-        "[Prerender] Failed to attach page event listeners",
-        e,
-      );
-    }
+        });
+      } catch (e) {
+        this._logger.debug(
+          "[Prerender] Failed to attach page event listeners",
+          e,
+        );
+      }
 
-    try {
-      const result = await Promise.race([
-        this._renderPageInternal(page),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () =>
-              reject(
-                new Error(`Render timed out after ${DEFAULT_RENDER_TIMEOUT}ms`),
-              ),
-            DEFAULT_RENDER_TIMEOUT,
+      try {
+        return await Promise.race([
+          this._renderPageInternal(page),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  new Error(`Render timed out after ${DEFAULT_RENDER_TIMEOUT}ms`),
+                ),
+              DEFAULT_RENDER_TIMEOUT,
+            ),
           ),
-        ),
-      ]);
-      return result;
-    } catch (e) {
-      this._logger.error(
-        `Failed to render page ${this._url}: ${e instanceof Error ? e.message : String(e)}`,
-      );
-      throw e;
-    } finally {
-      await page.close().catch((e) => {
-        this._logger.debug("[Prerender] Failed to close page", e);
-      });
+        ]);
+      } catch (e) {
+        lastError = e;
+        const shouldRetry =
+          attempt < MAX_RENDER_ATTEMPTS && this.isFrameDetachedError(e);
+
+        if (shouldRetry) {
+          this._logger.warn(
+            `[Prerender] Frame detached while rendering ${this._url}; retrying with a fresh page`,
+          );
+          continue;
+        }
+
+        this._logger.error(
+          `Failed to render page ${this._url}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        throw e;
+      } finally {
+        await page.close().catch((e) => {
+          this._logger.debug("[Prerender] Failed to close page", e);
+        });
+      }
     }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(`Failed to render page ${this._url}`);
+  }
+
+  private isFrameDetachedError(e: unknown): boolean {
+    const msg = e instanceof Error ? e.message : String(e);
+    return (
+      msg.includes("frame was detached") ||
+      msg.includes("Navigating frame was detached") ||
+      msg.includes("Target closed") ||
+      msg.includes("context was destroyed") ||
+      msg.includes("Execution context was destroyed")
+    );
   }
 
   private async _renderPageInternal(page: Page): Promise<RenderResult> {
+    await page.setViewport({ width: 1280, height: 720 });
     await page.setUserAgent({ userAgent: this._userAgent });
     await page.setExtraHTTPHeaders({
       "Accept-Language": "en-US,en;q=0.9",
@@ -163,10 +194,21 @@ export class RenderEngine {
 
     const response = await page.goto(this._url, {
       waitUntil: "load",
+      timeout: 15000,
     });
+
     await this.waitForPageReady({ page, url: this._url });
     if (!response) {
       throw new Error(`Failed to navigate to ${this._url}`);
+    }
+
+    const statusCode = response.status();
+
+    // Don't cache server error pages — they're transient origin failures
+    if (statusCode >= 500) {
+      throw new Error(
+        `Origin returned ${statusCode} for ${this._url}`,
+      );
     }
 
     if (navigationCount > MAX_NAVIGATIONS) {
@@ -176,7 +218,6 @@ export class RenderEngine {
     }
 
     const html = await page.content();
-    const statusCode = response.status();
     const xRobotsTag = response.headers()["x-robots-tag"] ?? null;
     const finalUrl = page.url();
 
@@ -216,12 +257,19 @@ export class RenderEngine {
         return false;
       }
 
+      const resourceType = req.resourceType() as unknown as string;
+
+      // Always track fetch/xhr regardless of host — SPAs often fetch from
+      // API subdomains (api.example.com) or third-party headless CMS endpoints
+      if (resourceType === "fetch" || resourceType === "xhr") {
+        return true;
+      }
+
       // For other resource types, only track first-party
       if (host !== targetHost) {
         return false;
       }
 
-      const resourceType = req.resourceType() as unknown as string;
       return trackResourceTypes.has(resourceType);
     } catch {
       return false;
@@ -252,6 +300,21 @@ export class RenderEngine {
       "intercom.io",
       "crisp.chat",
       "sentry.io",
+      "tawk.to",
+      "drift.com",
+      "zendesk.com",
+      "hubspot.com",
+      "hs-analytics.net",
+      "hs-scripts.com",
+      "freshdesk.com",
+      "livechatinc.com",
+      "fullstory.com",
+      "heap.io",
+      "heapanalytics.com",
+      "logrocket.com",
+      "mouseflow.com",
+      "optimizely.com",
+      "cloudflareinsights.com",
     ];
     return ignoredHosts.some((h) => host === h || host.endsWith(`.${h}`));
   }
@@ -307,6 +370,12 @@ export class RenderEngine {
             window.__TO_HTML = true;
             // @ts-expect-error - custom window properties
             window.__lastDomChange = Date.now();
+
+            // Disable CSS animations/transitions to prevent continuous DOM mutations
+            const style = document.createElement("style");
+            style.textContent =
+              "*, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; animation-delay: 0s !important; transition-delay: 0s !important; }";
+            (document.head || document.documentElement).appendChild(style);
 
             const setupObserver = () => {
               if (!document.documentElement) {
