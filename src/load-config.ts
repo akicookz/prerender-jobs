@@ -206,8 +206,12 @@ export function loadConfig(): Configuration {
   if (concurrencyRaw && !Number.isNaN(parseInt(concurrencyRaw))) {
     concurrency = parseInt(concurrencyRaw);
   }
+  const MAX_CONCURRENCY = 10;
   if (concurrency < 1) {
     throw new Error("CONCURRENCY must be at least 1");
+  }
+  if (concurrency > MAX_CONCURRENCY) {
+    concurrency = MAX_CONCURRENCY;
   }
 
   // Whether to skip cache sync is optional, default to true if not set

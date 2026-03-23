@@ -52,13 +52,23 @@ export class SitemapParser {
         lastmod: true,
       },
     });
-    const { sites, errors } = (await sitemapper.fetch()) as unknown as Omit<
-      SitemapperResponse,
-      "sites"
-    > & { sites: SitemapperSiteData[] };
-    if (errors.length > 0) {
+    let sites: SitemapperSiteData[];
+    try {
+      const result = (await sitemapper.fetch()) as unknown as Omit<
+        SitemapperResponse,
+        "sites"
+      > & { sites: SitemapperSiteData[] };
+      if (result.errors.length > 0) {
+        this._logger.error(
+          `Failed to fetch sitemap: ${result.errors.map((error) => `${error.type} on ${error.url}`).join(", ")}`,
+        );
+        return [];
+      }
+      sites = result.sites;
+    } catch (e) {
       this._logger.error(
-        `Failed to fetch sitemap: ${errors.map((error) => `${error.type} on ${error.url}`).join(", ")}`,
+        `Sitemap fetch threw an exception for ${this._sitemapUrl}`,
+        e,
       );
       return [];
     }
