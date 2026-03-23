@@ -262,14 +262,17 @@ async function reportResult({
   }
 
   if (config.webhookUrl) {
+    const webhookBody = JSON.stringify({
+      ...resultBody,
+      success_paths: successUrls.map((url) => extractPathFromUrl(url)),
+    });
+    const curlCommand = `curl -X POST '${config.webhookUrl}' -H 'Content-Type: application/json' -H 'x-webhook-signature: ${config.webhookSignature ?? ""}' -d '${webhookBody.replace(/'/g, "'\\''")}'`;
     logger.info(`Calling webhook endpoint: ${config.webhookUrl}`);
+    logger.info(`Equivalent curl command:\n${curlCommand}`);
     try {
       const response = await fetch(config.webhookUrl, {
         method: "POST",
-        body: JSON.stringify({
-          ...resultBody,
-          success_paths: successUrls.map((url) => extractPathFromUrl(url)),
-        }),
+        body: webhookBody,
         headers: {
           "Content-Type": "application/json",
           "x-webhook-signature": config.webhookSignature ?? "",
