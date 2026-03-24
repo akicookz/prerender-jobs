@@ -426,7 +426,7 @@ async function runPipelineBatches({
   config: Configuration;
   urlsToRender: string[];
   launchBrowserFn: () => Promise<Browser>;
-}): Promise<{ resultMap: Map<string, PipelineResult>; browser: Browser }> {
+}): Promise<{ resultMap: Map<string, PipelineResult> }> {
   const pipelineResults: PipelineResult[] = [];
   const totalNumberOfBatches = Math.ceil(urlsToRender.length / concurrency);
   logger.info(`Running pipeline batches with concurrency: ${concurrency}`);
@@ -435,67 +435,30 @@ async function runPipelineBatches({
     logger.info(`${INDENT}↳ SKIPPING CACHING: SKIP_CACHE_SYNC is true`);
   }
 
-  const MAX_BROWSER_RECOVERIES = 3;
-  let browserRecoveries = 0;
-  let browser = await launchBrowserFn();
-  let browserDisconnected = false;
-
-  browser.on("disconnected", () => {
-    browserDisconnected = true;
-    logger.warn("[Browser] Browser disconnected unexpectedly");
-  });
-
   let processedCount = 0;
-  try {
-    for (let i = 0; i < urlsToRender.length; i += concurrency) {
-      // Recover the shared browser before the next batch starts if Chromium died.
-      if (browserDisconnected) {
-        if (browserRecoveries >= MAX_BROWSER_RECOVERIES) {
-          logger.error(
-            `[Browser] Max browser recoveries (${MAX_BROWSER_RECOVERIES}) exceeded; aborting remaining batches`,
-          );
-          for (let j = i; j < urlsToRender.length; j++) {
-            pipelineResults.push({
-              url: urlsToRender[j]!,
-              isRendered: false,
-              isAnalyzed: false,
-              isCachedToR2: false,
-              isCachedToKv: false,
-            });
-          }
-          break;
-        }
+  for (let i = 0; i < urlsToRender.length; i += concurrency) {
+    const batchNumber = i / concurrency + 1;
+    logger.info(`Start batch ${batchNumber} of ${totalNumberOfBatches}`);
 
-        browserRecoveries++;
-        logger.warn(
-          `[Browser] Relaunching browser (recovery ${browserRecoveries}/${MAX_BROWSER_RECOVERIES})`,
-        );
-        try {
-          browser = await launchBrowserFn();
-          browserDisconnected = false;
-          browser.on("disconnected", () => {
-            browserDisconnected = true;
-            logger.warn("[Browser] Browser disconnected unexpectedly");
-          });
-        } catch (e) {
-          logger.error("[Browser] Failed to relaunch browser", e);
-          for (let j = i; j < urlsToRender.length; j++) {
-            pipelineResults.push({
-              url: urlsToRender[j]!,
-              isRendered: false,
-              isAnalyzed: false,
-              isCachedToR2: false,
-              isCachedToKv: false,
-            });
-          }
-          break;
-        }
+    let browser: Browser;
+    try {
+      browser = await launchBrowserFn();
+    } catch (e) {
+      logger.error(`[Browser] Failed to launch browser for batch ${batchNumber}`, e);
+      for (let j = i; j < urlsToRender.length; j++) {
+        pipelineResults.push({
+          url: urlsToRender[j]!,
+          isRendered: false,
+          isAnalyzed: false,
+          isCachedToR2: false,
+          isCachedToKv: false,
+        });
       }
+      break;
+    }
 
-      logger.info(
-        `Start batch ${i / concurrency + 1} of ${totalNumberOfBatches}`,
-      );
-      const batchUrls = urlsToRender.slice(i, i + concurrency);
+    const batchUrls = urlsToRender.slice(i, i + concurrency);
+    try {
       const batchResults = await Promise.all(
         batchUrls.map((url, index) =>
           runPipeline({
@@ -508,12 +471,12 @@ async function runPipelineBatches({
       );
       pipelineResults.push(...batchResults);
       processedCount += batchUrls.length;
+    } finally {
+      await browser.close().catch((closeError) => {
+        logger.debug(`Failed to close browser after batch ${batchNumber}`, closeError);
+      });
+      logger.info(`Browser closed after batch ${batchNumber}`);
     }
-  } catch (e) {
-    await browser.close().catch((closeError) => {
-      logger.debug("Failed to close browser after pipeline error", closeError);
-    });
-    throw e;
   }
 
   const resultMap = new Map<string, PipelineResult>();
@@ -521,7 +484,7 @@ async function runPipelineBatches({
     resultMap.set(result.url, result);
   });
 
-  return { resultMap, browser };
+  return { resultMap };
 }
 
 async function bulkUpdateKv({
@@ -621,21 +584,13 @@ async function main(): Promise<void> {
     sitemapUrl = result.sitemapUrl;
   }
 
-  // STEP 2+3 : Run the pipeline batches with a shared browser.
-  const { resultMap: urlResultMap, browser } = await runPipelineBatches({
+  // STEP 2+3 : Run the pipeline batches (one browser per batch).
+  const { resultMap: urlResultMap } = await runPipelineBatches({
     concurrency: config.concurrency,
     urlsToRender,
     config,
     launchBrowserFn: launchBrowser,
   });
-
-  // Always close the browser after rendering, even if subsequent steps fail
-  try {
-    await browser.close();
-    logger.info("Browser closed");
-  } catch (e) {
-    logger.warn("Failed to close browser:", e);
-  }
 
   if (config.skipCacheSync) {
     logger.info(`SKIPPING KV UPLOAD: SKIP_CACHE_SYNC is true`);
