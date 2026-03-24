@@ -2,7 +2,7 @@ import { Browser, ConsoleMessage, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { AppLogger } from "./logger";
 
-const DEFAULT_RENDER_TIMEOUT = 15000; // 15 seconds
+const DEFAULT_RENDER_TIMEOUT = 20000; // 20 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 const MAX_NAVIGATIONS = 5;
 const MAX_RENDER_ATTEMPTS = 2;
@@ -206,6 +206,7 @@ export class RenderEngine {
 
     // Attach request tracker before navigation so requests during page.goto are captured
     const firstPartyReqPending = new Set<HTTPRequest>();
+    const outgoingRequests = new Set<HTTPRequest>();
 
     page.on("request", (req: HTTPRequest) => {
       // Add the internal prerender header only to same-origin requests
@@ -218,6 +219,8 @@ export class RenderEngine {
         // If continue fails (e.g. request already handled), ignore
         return void 0;
       });
+
+      outgoingRequests.add(req);
 
       try {
         if (this.shouldTrackReq({ req, targetHost })) {
@@ -232,6 +235,7 @@ export class RenderEngine {
       this._logger.debug(
         `[Prerender] Request ${req.url()} settled for ${this._url}`,
       );
+      outgoingRequests.delete(req);
       try {
         firstPartyReqPending.delete(req);
       } catch {
@@ -255,6 +259,17 @@ export class RenderEngine {
     await this.waitForPageReady({ page, firstPartyReqPending });
     if (!response) {
       throw new Error(`Failed to navigate to ${this._url}`);
+    }
+
+    if (outgoingRequests.size > 0) {
+      this._logger.debug(
+        "Unresolved requests:",
+        JSON.stringify(
+          Array.from(outgoingRequests).map((req) => req.url()),
+          null,
+          2,
+        ),
+      );
     }
 
     const statusCode = response.status();
@@ -297,7 +312,6 @@ export class RenderEngine {
       "fetch",
       "stylesheet",
       "image",
-      "font",
     ]);
     try {
       const host = getHostname(req.url());
