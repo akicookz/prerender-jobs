@@ -1,4 +1,3 @@
-import { getHostname } from "tldts";
 import { isMemberOfEnum } from "./util";
 
 const DEFAULT_CACHE_TTL = 604800; // 7 days
@@ -17,7 +16,8 @@ enum ConfigEnvVariables {
   // REQUIRED
   BATCH_ID = "BATCH_ID",
   USER_ID = "USER_ID",
-  URL_LIST = "URL_LIST",
+  BASE_URL = "BASE_URL",
+  PATHS_LIST = "PATHS_LIST",
   DOMAIN = "DOMAIN",
   ORIGIN_HOST = "ORIGIN_HOST",
   CF_ACCOUNT_ID = "CF_ACCOUNT_ID",
@@ -33,7 +33,6 @@ enum ConfigEnvVariables {
   WEBHOOK_SIGNATURE = "WEBHOOK_SIGNATURE",
   SITEMAP_URL = "SITEMAP_URL",
   SITEMAP_UPDATED_WITHIN = "SITEMAP_UPDATED_WITHIN",
-  CACHE_TTL = "CACHE_TTL",
   USER_AGENT = "USER_AGENT",
   SKIP_CACHE_SYNC = "SKIP_CACHE_SYNC",
   SKIP_SITEMAP_PARSING = "SKIP_SITEMAP_PARSING",
@@ -42,6 +41,11 @@ enum ConfigEnvVariables {
   RETRY_OPTIONS = "RETRY_OPTIONS",
   REQUEST_SOURCE = "REQUEST_SOURCE",
   CANONICAL_DOMAIN = "CANONICAL_DOMAIN",
+}
+
+export interface PathEntry {
+  path: string;
+  ttl: number;
 }
 
 export interface Configuration {
@@ -54,8 +58,10 @@ export interface Configuration {
   originHost: string;
   // Canonical domain (preferred hostname for canonical URLs)
   canonicalDomain: string;
-  // JSON array of URLs
-  urlList: string[];
+  // Base URL (e.g. https://example.com)
+  baseUrl: string;
+  // Paths with per-path TTL
+  pathsList: PathEntry[];
   // Callback URL on completion
   webhookUrl?: string;
   // Webhook secret
@@ -76,8 +82,6 @@ export interface Configuration {
   r2BucketName: string;
   // KV namespace ID
   kvNamespaceId: string;
-  // TTL in seconds
-  cacheTtl: number;
   // User agent
   userAgent: string;
   // Concurrency
@@ -128,24 +132,44 @@ export function loadConfig(): Configuration {
   const canonicalDomain =
     process.env[ConfigEnvVariables.CANONICAL_DOMAIN] || domain;
 
-  // URL list is required
-  const urlListRaw = process.env[ConfigEnvVariables.URL_LIST] ?? "";
-  let urlList: string[] = [];
+  // Base URL is required
+  const baseUrl = process.env[ConfigEnvVariables.BASE_URL]?.replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("BASE_URL is required");
+  }
+  if (!baseUrl.startsWith("https://")) {
+    throw new Error("BASE_URL must start with https://");
+  }
+
+  // Paths list is required
+  const pathsListRaw = process.env[ConfigEnvVariables.PATHS_LIST] ?? "";
+  let pathsListParsed: { path: string; ttl?: number }[] = [];
   try {
-    urlList = JSON.parse(urlListRaw) as string[];
+    pathsListParsed = JSON.parse(pathsListRaw) as {
+      path: string;
+      ttl?: number;
+    }[];
   } catch {
-    throw new Error("URL_LIST must be a valid JSON array");
+    throw new Error("PATHS_LIST must be a valid JSON array");
   }
-  if (urlList.length === 0) {
-    throw new Error("URL_LIST is required and must be a non-empty CSV");
+  if (!Array.isArray(pathsListParsed) || pathsListParsed.length === 0) {
+    throw new Error("PATHS_LIST is required and must be a non-empty array");
   }
-  if (urlList.some((url) => !url.startsWith("https://"))) {
-    throw new Error("URL_LIST must be a list of URLs starting with https://");
-  }
-  const urlHostname = getHostname(urlList[0]!);
-  if (urlList.some((url) => getHostname(url) !== urlHostname)) {
-    throw new Error("URL_LIST must be a list of URLs with the same hostname");
-  }
+  const pathsList: PathEntry[] = pathsListParsed.map((entry, i) => {
+    if (!entry.path || !entry.path.startsWith("/")) {
+      throw new Error(
+        `PATHS_LIST[${i}].path must be a string starting with '/'`,
+      );
+    }
+    const ttl =
+      entry.ttl !== undefined && entry.ttl !== null
+        ? entry.ttl
+        : DEFAULT_CACHE_TTL;
+    if (!Number.isInteger(ttl) || ttl <= 0) {
+      throw new Error(`PATHS_LIST[${i}].ttl must be a positive integer`);
+    }
+    return { path: entry.path, ttl };
+  });
 
   // Webhook URL, Telegram bot token, Telegram chat ID, and sitemap URL are optional
   const webhookUrl = process.env[ConfigEnvVariables.WEBHOOK_URL];
@@ -189,13 +213,6 @@ export function loadConfig(): Configuration {
     throw new Error("KV_NAMESPACE_ID is required");
   }
 
-  // Cache TTL is optional, default to 7 days if not set
-  const cacheTtlRaw = process.env[ConfigEnvVariables.CACHE_TTL];
-  let cacheTtl: number = DEFAULT_CACHE_TTL;
-  if (cacheTtlRaw && !Number.isNaN(parseInt(cacheTtlRaw))) {
-    cacheTtl = parseInt(cacheTtlRaw);
-  }
-
   // User agent is optional, default to default user agent if not set
   const userAgent =
     process.env[ConfigEnvVariables.USER_AGENT] ?? DEFAULT_USER_AGENT;
@@ -236,7 +253,8 @@ export function loadConfig(): Configuration {
     domain,
     originHost,
     canonicalDomain,
-    urlList,
+    baseUrl,
+    pathsList,
     webhookUrl,
     webhookSignature,
     sitemapUrl,
@@ -247,7 +265,6 @@ export function loadConfig(): Configuration {
     r2SecretAccessKey,
     r2BucketName,
     kvNamespaceId,
-    cacheTtl,
     userAgent,
     concurrency,
     skipCacheSync,

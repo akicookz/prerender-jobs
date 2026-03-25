@@ -1,7 +1,6 @@
 export const CACHE_VERSION = "v1"; // bump to invalidate KV mapping semantics
 
 export interface CacheConfig {
-  cacheTtl: number;
   cfAccountId: string;
   cfApiToken: string;
   r2AccessKeyId: string;

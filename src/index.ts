@@ -3,15 +3,14 @@ import { DateTime } from "luxon";
 import * as TelegramBot from "node-telegram-bot-api";
 import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
-import { getHostname } from "tldts";
 import { CacheInvalidator } from "./cache-manager/cache-invalidator";
 import { buildKvKey } from "./cache-manager/kv-key-utils";
 import { KvLoader } from "./cache-manager/kv-loader";
 import { R2Loader } from "./cache-manager/r2-loader";
 import { KvRecord } from "./cache-manager/type";
+import { sanitizeHtml } from "./html-sanitizer";
 import { loadConfig, type Configuration } from "./load-config";
 import { AppLogger, INDENT } from "./logger";
-import { sanitizeHtml } from "./html-sanitizer";
 import { RenderEngine, type RenderResult } from "./render-engine";
 import { SeoAnalyzer } from "./seo-analyzer/index";
 import type { PageSeoAnalysis } from "./seo-analyzer/type";
@@ -20,6 +19,7 @@ import { extractPathFromUrl, sleep } from "./util";
 
 interface PipelineResult {
   url: string;
+  cacheTtl: number;
   isRendered: boolean;
   isAnalyzed: boolean;
   isCachedToR2: boolean;
@@ -78,22 +78,22 @@ function getConfig(): Configuration {
 
 async function prepareTargetUrls({
   config,
+  urlsFromPaths,
 }: {
   config: Configuration;
+  urlsFromPaths: string[];
 }): Promise<{ urlsToRender: string[]; sitemapUrl: string }> {
-  const sitemapUrl =
-    config.sitemapUrl ||
-    `https://${getHostname(config.urlList[0]!)}/sitemap.xml`;
+  const sitemapUrl = config.sitemapUrl || `${config.baseUrl}/sitemap.xml`;
   const sitemapParser = SitemapParser.register({
     sitemapUrl,
     lastmodFilter: config.sitemapUpdatedWithin,
   });
   const urlsFromSitemap = await sitemapParser.parseSitemap();
   const urlsToRender = uniq(
-    [...config.urlList, ...urlsFromSitemap].map((url) => normalizeUrl(url)),
+    [...urlsFromPaths, ...urlsFromSitemap].map((url) => normalizeUrl(url)),
   );
   logger.info(`Prepared ${urlsToRender.length} URLs to render`);
-  logger.info(`Base URL: ${getHostname(urlsToRender[0]!)}`);
+  logger.info(`Base URL: ${config.baseUrl}`);
   urlsToRender.forEach((url, index) => {
     logger.info(`${INDENT}${index + 1}: ${extractPathFromUrl(url)}`);
   });
@@ -314,17 +314,20 @@ async function launchBrowser(): Promise<Browser> {
 async function runPipeline({
   pipelineNumber,
   urlToRender,
+  cacheTtl,
   config,
   browser,
 }: {
   pipelineNumber: number;
   urlToRender: string;
+  cacheTtl: number;
   config: Configuration;
   browser: Browser;
 }): Promise<PipelineResult> {
   const path = extractPathFromUrl(urlToRender);
   const result: PipelineResult = {
     url: urlToRender,
+    cacheTtl,
     isRendered: false,
     isAnalyzed: false,
     isCachedToR2: false,
@@ -396,7 +399,7 @@ async function runPipeline({
       r2AccessKeyId: config.r2AccessKeyId,
       r2SecretAccessKey: config.r2SecretAccessKey,
       r2BucketName: config.r2BucketName,
-      cacheTtl: config.cacheTtl,
+      cacheTtl,
     },
   });
   const r2UploadResult = await r2Loader.uploadR2Object();
@@ -419,12 +422,14 @@ async function runPipeline({
 async function runPipelineBatches({
   concurrency,
   urlsToRender,
+  cacheTtlMap,
   config,
   launchBrowserFn,
 }: {
   concurrency: number;
   config: Configuration;
   urlsToRender: string[];
+  cacheTtlMap: Map<string, number>;
   launchBrowserFn: () => Promise<Browser>;
 }): Promise<{ resultMap: Map<string, PipelineResult> }> {
   const pipelineResults: PipelineResult[] = [];
@@ -444,10 +449,15 @@ async function runPipelineBatches({
     try {
       browser = await launchBrowserFn();
     } catch (e) {
-      logger.error(`[Browser] Failed to launch browser for batch ${batchNumber}`, e);
+      logger.error(
+        `[Browser] Failed to launch browser for batch ${batchNumber}`,
+        e,
+      );
       for (let j = i; j < urlsToRender.length; j++) {
+        const failedUrl = urlsToRender[j]!;
         pipelineResults.push({
-          url: urlsToRender[j]!,
+          url: failedUrl,
+          cacheTtl: cacheTtlMap.get(failedUrl) ?? 604800,
           isRendered: false,
           isAnalyzed: false,
           isCachedToR2: false,
@@ -464,6 +474,7 @@ async function runPipelineBatches({
           runPipeline({
             pipelineNumber: processedCount + index + 1,
             urlToRender: url,
+            cacheTtl: cacheTtlMap.get(url) ?? 604800,
             config,
             browser,
           }),
@@ -473,7 +484,10 @@ async function runPipelineBatches({
       processedCount += batchUrls.length;
     } finally {
       await browser.close().catch((closeError) => {
-        logger.debug(`Failed to close browser after batch ${batchNumber}`, closeError);
+        logger.debug(
+          `Failed to close browser after batch ${batchNumber}`,
+          closeError,
+        );
       });
       logger.info(`Browser closed after batch ${batchNumber}`);
     }
@@ -572,14 +586,22 @@ async function main(): Promise<void> {
   const startedAt = Date.now();
 
   // STEP 1 : Prepare target URLs
-  let urlsToRender: string[] = [...config.urlList];
+  // Build URL-to-TTL map from pathsList
+  const cacheTtlMap = new Map<string, number>();
+  const urlsFromPaths = config.pathsList.map((entry) => {
+    const url = normalizeUrl(`${config.baseUrl}${entry.path}`);
+    cacheTtlMap.set(url, entry.ttl);
+    return url;
+  });
+
+  let urlsToRender: string[] = [...urlsFromPaths];
   let sitemapUrl: string = "";
   if (config.skipSitemapParsing) {
     logger.info(`SKIPPING SITEMAP PARSING: SKIP_SITEMAP_PARSING is true`);
-    urlsToRender = config.urlList;
+    urlsToRender = urlsFromPaths;
     sitemapUrl = "skipped";
   } else {
-    const result = await prepareTargetUrls({ config });
+    const result = await prepareTargetUrls({ config, urlsFromPaths });
     urlsToRender = result.urlsToRender;
     sitemapUrl = result.sitemapUrl;
   }
@@ -588,6 +610,7 @@ async function main(): Promise<void> {
   const { resultMap: urlResultMap } = await runPipelineBatches({
     concurrency: config.concurrency,
     urlsToRender,
+    cacheTtlMap,
     config,
     launchBrowserFn: launchBrowser,
   });
@@ -611,7 +634,7 @@ async function main(): Promise<void> {
           kvPair: {
             key: kvKey,
             value: JSON.stringify(result.payloadForKv.kvRecord),
-            expiration_ttl: config.cacheTtl,
+            expiration_ttl: result.cacheTtl,
           },
         });
         objectKeyMap.set(kvKey, result.payloadForKv.objectKey);
