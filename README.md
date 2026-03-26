@@ -6,7 +6,7 @@ Prerender engine that fetches pages via headless Chromium, captures full HTML sn
 
 The job runs in three top-level steps:
 
-1. **Prepare URLs** — merges `URL_LIST` with all URLs discovered from the sitemap, deduplicates, and normalises them. If `SKIP_SITEMAP_PARSING=true`, sitemap discovery is skipped and only the URLs in `URL_LIST` are used.
+1. **Prepare URLs** — merges `PATHS_LIST` (resolved against `BASE_URL`) with all URLs discovered from the sitemap, deduplicates, and normalises them. If `SKIP_SITEMAP_PARSING=true`, sitemap discovery is skipped and only the paths in `PATHS_LIST` are used. Each path entry can specify its own `ttl` (cache TTL in seconds).
 2. **Launch browser** — opens a single shared headless Chromium instance (puppeteer-core) reused for all pages.
 3. **Run pipeline batches** — URLs are split into batches of `CONCURRENCY` and each batch is processed concurrently. Within a batch, every URL flows through a per-URL pipeline:
    1. **Render** — navigates the URL in a new tab and waits for the page to be ready (see [Readiness detection](#readiness-detection) below). If rendering fails the URL is skipped.
@@ -46,7 +46,8 @@ cp .env.sample .env.local
 | `REQUEST_SOURCE`         | yes      | —                        | Job trigger identifier (e.g. `scheduler`, `manual`); sent as `source` in the webhook                                            |
 | `DOMAIN`                 | yes      | —                        | The domain being prerendered (e.g. `example.com`); sent as `domain` in the webhook                                              |
 | `ORIGIN_HOST`            | yes      | —                        | The origin host to fetch pages from (e.g. `origin.example.com`); sent as `origin_host` in the webhook                           |
-| `URL_LIST`               | yes      | —                        | JSON array of URLs to prerender, e.g. `["https://example.com/","https://example.com/about"]` (all must share the same hostname) |
+| `BASE_URL`               | yes      | —                        | Base URL for prerendering, e.g. `https://example.com` (must start with `https://`)                                              |
+| `PATHS_LIST`             | yes      | —                        | JSON array of path entries, e.g. `[{"path":"/","ttl":604800},{"path":"/about","ttl":86400}]`. Each `path` must start with `/`. `ttl` (seconds) defaults to 604800 (7 days) if omitted |
 | `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                                                                           |
 | `CF_API_TOKEN`           | yes      | —                        | Cloudflare API token (KV write access)                                                                                          |
 | `R2_ACCESS_KEY_ID`       | yes      | —                        | R2 S3-compatible access key                                                                                                     |
@@ -56,7 +57,6 @@ cp .env.sample .env.local
 | `RETRY_OPTIONS`          | no       | —                        | JSON string forwarded as `retry_options` in the webhook for downstream retry handling                                           |
 | `SITEMAP_URL`            | no       | `<hostname>/sitemap.xml` | Explicit sitemap URL                                                                                                            |
 | `SITEMAP_UPDATED_WITHIN` | no       | `all`                    | Filter sitemap URLs by lastmod: `1d`, `3d`, `7d`, `30d`, `all`                                                                  |
-| `CACHE_TTL`              | no       | `604800` (7 days)        | Cache TTL in seconds                                                                                                            |
 | `USER_AGENT`             | no       | Chrome 124 UA string     | Custom user agent string                                                                                                        |
 | `CONCURRENCY`            | no       | `1`                      | Number of pages to render in parallel                                                                                           |
 | `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2 and KV                                                                                   |
