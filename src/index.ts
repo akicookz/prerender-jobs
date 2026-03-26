@@ -534,12 +534,27 @@ async function bulkUpdateKv({
   const targetKvPairs = Array.from(kvPairInfoMap.values()).map(
     ({ kvPair }) => kvPair,
   );
+
+  const filteredTargetKvPairs: {
+    key: string;
+    value: string;
+    expiration_ttl: number;
+  }[] = [];
+  const KV_KEY_LENGTH_LIMIT = 512;
+  targetKvPairs.forEach((kvPair) => {
+    if (new TextEncoder().encode(kvPair.key).length > KV_KEY_LENGTH_LIMIT) {
+      logger.error(`KV key length exceeds limit: ${kvPair.key.length}`);
+      finalUnsuccessfulKeys.push(kvPair.key);
+    } else {
+      filteredTargetKvPairs.push(kvPair);
+    }
+  });
   const kvUploadResult = await kvLoader.uploadKvRecords({
-    kvPairs: targetKvPairs,
+    kvPairs: filteredTargetKvPairs,
   });
 
-  finalSuccessfulKeyCount = kvUploadResult.successfulKeyCount;
-  finalUnsuccessfulKeys = kvUploadResult.unsuccessfulKeys;
+  finalSuccessfulKeyCount += kvUploadResult.successfulKeyCount;
+  finalUnsuccessfulKeys.push(...kvUploadResult.unsuccessfulKeys);
 
   // retry after 10 seconds if unsuccessful
   if (kvUploadResult.unsuccessfulKeys.length > 0) {
