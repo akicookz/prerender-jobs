@@ -34,6 +34,11 @@ const UNIQUE_TAG_SELECTORS = [
  * and noise removal. Produces clean, content-rich HTML suitable for
  * search engine crawlers and LLM/AI consumers.
  */
+export {
+  detectMetadataLoss,
+  type MetadataLossResult,
+} from "./detect-metadata-loss";
+
 export function sanitizeHtml({
   html,
   url,

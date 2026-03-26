@@ -8,7 +8,7 @@ import { buildKvKey } from "./cache-manager/kv-key-utils";
 import { KvLoader } from "./cache-manager/kv-loader";
 import { R2Loader } from "./cache-manager/r2-loader";
 import { KvRecord } from "./cache-manager/type";
-import { sanitizeHtml } from "./html-sanitizer";
+import { sanitizeHtml, detectMetadataLoss } from "./html-sanitizer";
 import { loadConfig, type Configuration } from "./load-config";
 import { AppLogger, INDENT } from "./logger";
 import { RenderEngine, type RenderResult } from "./render-engine";
@@ -366,6 +366,44 @@ async function runPipeline({
     sanitizedHtml = renderResult.html;
   }
   logger.info(`${INDENT}${INDENT}↳ ${path} - HTML sanitized`);
+
+  // Detect SEO metadata lost during sanitization
+  try {
+    const metadataLoss = detectMetadataLoss(renderResult.html, sanitizedHtml);
+    if (metadataLoss.lostProperties.length > 0) {
+      logger.warn(
+        `${INDENT}${INDENT}↳ ${path} - SEO metadata lost during sanitization: ${metadataLoss.lostProperties.join(", ")}`,
+        { originalHtml: renderResult.html, sanitizedHtml },
+      );
+
+      if (config.telegramBotToken && config.telegramChatId) {
+        const telegramBot = new TelegramBot(config.telegramBotToken);
+        const message =
+          `⚠️ SEO metadata lost during sanitization\n\nJob ID: ${process.env.CLOUD_RUN_EXECUTION}\nURL: ${urlToRender}\nPath: ${path}\nLost: ${metadataLoss.lostProperties.join(", ")}`.slice(
+            0,
+            4096,
+          );
+        try {
+          await Promise.race([
+            telegramBot.sendMessage(config.telegramChatId, message),
+            new Promise((_, reject) =>
+              setTimeout(
+                () => reject(new Error("Telegram send timeout")),
+                10000,
+              ),
+            ),
+          ]);
+        } catch (e) {
+          logger.error(`Failed to send metadata loss alert to Telegram`, e);
+        }
+      }
+    }
+  } catch (e) {
+    logger.error(
+      `${INDENT}${INDENT}↳ ${path} - SEO metadata loss detection failed`,
+      e,
+    );
+  }
 
   let seoAnalysisResult: PageSeoAnalysis | null = null;
   try {
