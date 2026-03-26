@@ -180,7 +180,12 @@ export function sanitizeHtml({
   const collapsedOutput = collapseWhitespace(output);
 
   const finalRoot = parse(collapsedOutput);
-  const finalOutput = beautifier.html(finalRoot.toString(), { indent_size: 2 });
+  let finalOutput = finalRoot.toString();
+  try {
+    finalOutput = beautifier.html(finalOutput, { indent_size: 2 });
+  } catch {
+    // Ignore errors
+  }
 
   return finalOutput;
 }
