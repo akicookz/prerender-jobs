@@ -20,6 +20,7 @@
   "packageManager": "pnpm@10.29.3",
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@types/js-beautify": "^1.14.3",
     "@types/luxon": "^3.7.1",
     "@types/node": "^25.2.2",
     "@types/node-telegram-bot-api": "^0.64.13",
@@ -35,6 +36,7 @@
     "@aws-sdk/client-s3": "^3.988.0",
     "cloudflare": "^5.2.0",
     "es-toolkit": "^1.44.0",
+    "js-beautify": "^1.15.4",
     "luxon": "^3.7.2",
     "node-html-parser": "^7.1.0",
     "node-telegram-bot-api": "^0.67.0",

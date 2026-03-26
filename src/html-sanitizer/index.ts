@@ -1,6 +1,7 @@
 import { Node, NodeType, parse, type HTMLElement } from "node-html-parser";
 import type { SanitizeOptions } from "./type";
 import { detectSoft404 } from "./soft-404";
+import * as beautifier from "js-beautify";
 
 /** Internal query params injected by the prerender system that must be stripped */
 const INTERNAL_PARAMS = ["to_html", "cache_invalidate"];
@@ -179,7 +180,7 @@ export function sanitizeHtml({
   const collapsedOutput = collapseWhitespace(output);
 
   const finalRoot = parse(collapsedOutput);
-  const finalOutput = finalRoot.toString();
+  const finalOutput = beautifier.html(finalRoot.toString(), { indent_size: 2 });
 
   return finalOutput;
 }

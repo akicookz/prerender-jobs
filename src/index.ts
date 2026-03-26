@@ -358,6 +358,10 @@ async function runPipeline({
       url: renderResult.finalUrl,
       canonicalDomain: config.canonicalDomain,
     });
+    console.log("\n\n\n SANITIZED HTML", sanitizedHtml);
+    console.log("\n\n\n SANITIZED HTML END\n\n\n");
+    console.log("\n\n\n RENDER RESULT HTML", renderResult.html);
+    console.log("\n\n\n RENDER RESULT HTML END\n\n\n");
   } catch (e) {
     logger.error(
       `${INDENT}${INDENT}↳ ${path} - HTML sanitization failed fallback to original HTML`,
