@@ -2,7 +2,7 @@ import { Browser, ConsoleMessage, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { AppLogger } from "./logger";
 
-const DEFAULT_RENDER_TIMEOUT = 35_000; // 35 seconds
+const DEFAULT_RENDER_TIMEOUT = 65_000; // 65 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 const MAX_NAVIGATIONS = 5;
 const MAX_RENDER_ATTEMPTS = 2;
@@ -209,11 +209,22 @@ export class RenderEngine {
     const outgoingRequests = new Set<HTTPRequest>();
 
     page.on("request", (req: HTTPRequest) => {
+      let url: URL;
+      try {
+        url = new URL(req.url());
+      } catch {
+        return;
+      }
       // Add the internal prerender header only to same-origin requests
-      const reqHost = getHostname(req.url());
+      const reqHost = url.hostname;
+      const reqPath = url.pathname;
       const headers = req.headers();
       if (reqHost === targetHost) {
         headers[INTERNAL_PRERENDER_HEADER] = "1";
+      } else if (this.isIgnoredHost(reqHost) || this.isIgnoredPath(reqPath)) {
+        this._logger.debug(`[Prerender] Ignoring request to ${req.url()}`);
+        req.abort().catch(() => void 0);
+        return;
       }
       req.continue({ headers }).catch(() => {
         // If continue fails (e.g. request already handled), ignore
@@ -232,9 +243,11 @@ export class RenderEngine {
     });
 
     const settle = (req: HTTPRequest) => {
-      this._logger.debug(
-        `[Prerender] Request ${req.url()} settled for ${this._url}`,
-      );
+      if (outgoingRequests.has(req)) {
+        this._logger.debug(
+          `[Prerender] Request ${req.url()} settled for ${this._url}`,
+        );
+      }
       outgoingRequests.delete(req);
       try {
         firstPartyReqPending.delete(req);
@@ -249,7 +262,7 @@ export class RenderEngine {
     this._logger.debug(`[Prerender] Navigating to ${this._url}`);
     const response = await page.goto(this._url, {
       waitUntil: "load",
-      timeout: 20_000,
+      timeout: 30_000,
     });
     const navEndTimestamp = Date.now();
     this._logger.debug(
@@ -319,11 +332,6 @@ export class RenderEngine {
         return false;
       }
 
-      // Always ignore analytics/fonts/tracking
-      if (this.isIgnoredHost(host)) {
-        return false;
-      }
-
       const resourceType = req.resourceType() as unknown as string;
 
       // Always track fetch/xhr regardless of host — SPAs often fetch from
@@ -343,9 +351,16 @@ export class RenderEngine {
     }
   }
 
+  private isIgnoredPath(path: string): boolean {
+    const ignoredPaths = ["fb-conversions-api"];
+    return ignoredPaths.some((p) => path.includes(p));
+  }
+
   private isIgnoredHost(host: string): boolean {
     // Domains to ignore for network idle detection (analytics, fonts, ads)
     const ignoredHosts = [
+      "google.com",
+      "google.co.uk",
       "google-analytics.com",
       "googletagmanager.com",
       "fonts.googleapis.com",
@@ -354,6 +369,7 @@ export class RenderEngine {
       "www.googletagmanager.com",
       "analytics.google.com",
       "facebook.com",
+      "www.facebook.com",
       "connect.facebook.net",
       "doubleclick.net",
       "googlesyndication.com",
@@ -389,18 +405,14 @@ export class RenderEngine {
 
   private async checkAppSignal({ page }: { page: Page }): Promise<boolean> {
     try {
-      const result = await Promise.race([
-        page.evaluate(() => {
-          // @ts-expect-error - custom window properties
-          const ready = window.prerenderReady as boolean;
-          // @ts-expect-error - custom window properties
-          const snapshot = window.htmlSnapshot as boolean;
-          return ready === true || snapshot === true;
-        }),
-        new Promise<boolean>((resolve) =>
-          setTimeout(() => resolve(false), 1000),
-        ),
-      ]);
+      const result = await page.evaluate(() => {
+        // @ts-expect-error - custom window properties
+        const ready = window.prerenderReady as boolean;
+        // @ts-expect-error - custom window properties
+        const snapshot = window.htmlSnapshot as boolean;
+        return ready === true || snapshot === true;
+      });
+
       return result;
     } catch {
       return false;
@@ -418,6 +430,7 @@ export class RenderEngine {
           setTimeout(() => resolve(Date.now()), 1000),
         ),
       ]);
+
       return result;
     } catch {
       return Date.now();
@@ -478,19 +491,40 @@ export class RenderEngine {
     }
   }
 
+  private async hasHeadMetadata({ page }: { page: Page }): Promise<boolean> {
+    try {
+      return await Promise.race([
+        page.evaluate(() => {
+          return !!(
+            document.querySelector("title")?.textContent ||
+            document.querySelector('meta[data-rh="true"]') ||
+            document.querySelector("meta[data-react-helmet]")
+          );
+        }),
+        new Promise<boolean>((resolve) =>
+          setTimeout(() => resolve(false), 1000),
+        ),
+      ]);
+    } catch {
+      return false;
+    }
+  }
+
   private async waitForPageReady({
     page,
-
     firstPartyReqPending,
   }: {
     page: Page;
     firstPartyReqPending: Set<HTTPRequest>;
   }): Promise<string> {
     // Readiness detection constants
-    const HARD_TIMEOUT_MS = 15000;
+    const HARD_TIMEOUT_MS = 30_000;
     const NETWORK_QUIET_MS = 500;
-    const DOM_STABLE_MS = 300;
-    const POLL_INTERVAL_MS = 100;
+    const DOM_STABLE_MS = 500;
+    const POLL_INTERVAL_MS = 400;
+    // After network+DOM are stable, wait an extra period for a final DOM
+    // settle before taking the snapshot (covers late Helmet injections).
+    const POST_READY_SETTLE_MS = 300;
 
     const startedAt = Date.now();
     const state: ReadinessState = {
@@ -526,6 +560,11 @@ export class RenderEngine {
         reject(error);
       };
 
+      // Track when the underlying signal (network+DOM / app_signaled) first fired
+      // so we can log it, but metadata is the gate for actually resolving.
+      let signalReason: string | null = null;
+      let signalFiredAt: number | null = null;
+
       const tick = async () => {
         if (settled) {
           return;
@@ -534,7 +573,7 @@ export class RenderEngine {
         const now = Date.now();
         const elapsed = now - startedAt;
 
-        // Hard timeout reached, take snapshot
+        // Hard timeout — snapshot regardless of metadata
         if (elapsed >= HARD_TIMEOUT_MS) {
           this._logger.debug(
             "[Prerender] Hard timeout reached, taking snapshot",
@@ -542,52 +581,90 @@ export class RenderEngine {
           return settleResolve("hard_timeout");
         }
 
-        // App signaled ready via prerenderReady/htmlSnapshot
-        if (await this.checkAppSignal({ page })) {
-          this._logger.debug(
-            "[Prerender] App signaled ready via prerenderReady/htmlSnapshot",
-          );
-          return settleResolve("app_signaled");
-        }
+        // ── Check metadata (title) every tick ──
+        // Metadata is a first-class readiness requirement, not a post-check.
+        const hasMetadata = await this.hasHeadMetadata({ page });
 
-        if (firstPartyReqPending.size === 0) {
-          if (state.networkIdleSince === null) {
-            state.networkIdleSince = now;
-          }
-        } else {
-          state.networkIdleSince = null;
-        }
+        // ── Check underlying signals ──
+        let signalReady = signalReason !== null;
 
-        const lastDomChange = await this.getLastDomChange({ page });
-        const domIdleTime = now - lastDomChange;
-        if (domIdleTime >= DOM_STABLE_MS) {
-          if (state.domStableSince === null) {
-            state.domStableSince = now;
-          }
-        } else {
-          state.domStableSince = null;
-        }
-
-        const networkIdleDuration =
-          state.networkIdleSince !== null ? now - state.networkIdleSince : 0;
-        const networkStable = networkIdleDuration >= NETWORK_QUIET_MS;
-        const domStable = state.domStableSince !== null;
-
-        if (networkStable && domStable) {
-          this._logger.debug(
-            `[Prerender] Page ready: network idle for ${networkIdleDuration}ms, DOM stable for ${domIdleTime}ms`,
-          );
-          return settleResolve("network_and_dom_stable");
-        }
-
-        const MIN_WAIT_MS = 500;
-        const DOM_EXTENDED_WAIT_MS = 3000;
-        if (elapsed >= MIN_WAIT_MS && networkStable) {
-          if (elapsed >= MIN_WAIT_MS + DOM_EXTENDED_WAIT_MS) {
+        if (!signalReady) {
+          // App signaled ready via prerenderReady/htmlSnapshot
+          if (await this.checkAppSignal({ page })) {
+            state.appSignaled = true;
+            signalReady = true;
+            signalReason = "app_signaled";
+            signalFiredAt = now;
             this._logger.debug(
-              "[Prerender] Network stable, DOM still active but extended wait exceeded",
+              "[Prerender] App signaled ready via prerenderReady/htmlSnapshot",
             );
-            return settleResolve("network_stable_dom_timeout");
+          }
+        }
+
+        if (!signalReady) {
+          if (firstPartyReqPending.size === 0) {
+            if (state.networkIdleSince === null) {
+              state.networkIdleSince = now;
+            }
+          } else {
+            state.networkIdleSince = null;
+          }
+
+          const lastDomChange = await this.getLastDomChange({ page });
+          const domIdleTime = now - lastDomChange;
+          if (domIdleTime >= DOM_STABLE_MS) {
+            if (state.domStableSince === null) {
+              state.domStableSince = now;
+            }
+          } else {
+            state.domStableSince = null;
+          }
+
+          const networkIdleDuration =
+            state.networkIdleSince !== null ? now - state.networkIdleSince : 0;
+          const networkStable = networkIdleDuration >= NETWORK_QUIET_MS;
+          const domStable = state.domStableSince !== null;
+
+          if (networkStable && domStable) {
+            signalReady = true;
+            signalReason = `network_and_dom_stable (network idle ${networkIdleDuration}ms, DOM stable ${domIdleTime}ms)`;
+            signalFiredAt = now;
+          }
+
+          const MIN_WAIT_MS = 500;
+          const DOM_EXTENDED_WAIT_MS = 3000;
+          if (elapsed >= MIN_WAIT_MS && networkStable) {
+            if (elapsed >= MIN_WAIT_MS + DOM_EXTENDED_WAIT_MS) {
+              signalReady = true;
+              signalReason = "network_stable_dom_timeout";
+              signalFiredAt = now;
+            }
+          }
+        }
+
+        // ── Resolution logic ──
+        // Both metadata AND an underlying signal must be satisfied.
+        // Metadata alone isn't enough (page might still be loading).
+        // Signal alone isn't enough (title may not have been injected yet).
+        if (hasMetadata && signalReady) {
+          // Wait a short settle period after both conditions are met so
+          // remaining meta tags (description, og:*) finish injecting.
+          const lastDomChange = await this.getLastDomChange({ page });
+          const domSettled = now - lastDomChange >= POST_READY_SETTLE_MS;
+          if (domSettled) {
+            this._logger.debug(`[Prerender] Page ready: ${signalReason}`);
+            return settleResolve(signalReason ?? "ready");
+          }
+        }
+
+        // Metadata present but no signal yet — keep waiting for signal
+        // Signal present but no metadata — keep polling for metadata
+        if (signalReady && !hasMetadata && signalFiredAt !== null) {
+          // Log once when we start waiting for metadata
+          if (now - signalFiredAt < POLL_INTERVAL_MS * 2) {
+            this._logger.debug(
+              `[Prerender] Signal ready (${signalReason}) but head metadata missing, will keep polling until hard timeout`,
+            );
           }
         }
 
