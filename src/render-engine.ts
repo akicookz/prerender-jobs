@@ -4,7 +4,7 @@ import { AppLogger } from "./logger";
 
 const DEFAULT_RENDER_TIMEOUT = 65_000; // 65 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
-const MAX_NAVIGATIONS = 5;
+const MAX_NAVIGATIONS = 10;
 const MAX_RENDER_ATTEMPTS = 2;
 
 export interface RenderResult {
