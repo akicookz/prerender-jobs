@@ -1,4 +1,5 @@
 import { uniq } from "es-toolkit";
+import { backOff } from "exponential-backoff";
 import { DateTime } from "luxon";
 import * as TelegramBot from "node-telegram-bot-api";
 import normalizeUrl from "normalize-url";
@@ -270,21 +271,38 @@ async function reportResult({
     logger.info(`Calling webhook endpoint: ${config.webhookUrl}`);
     logger.info(`Equivalent curl command:\n${curlCommand}`);
     try {
-      const response = await fetch(config.webhookUrl, {
-        method: "POST",
-        body: webhookBody,
-        headers: {
-          "Content-Type": "application/json",
-          "x-webhook-signature": config.webhookSignature ?? "",
+      await backOff(
+        async () => {
+          const res = await fetch(config.webhookUrl!, {
+            method: "POST",
+            body: webhookBody,
+            headers: {
+              "Content-Type": "application/json",
+              "x-webhook-signature": config.webhookSignature ?? "",
+            },
+            signal: AbortSignal.timeout(15_000),
+          });
+          if (!res.ok) {
+            throw new Error(
+              `Webhook returned ${res.status}: ${res.statusText}`,
+            );
+          }
+          return res;
         },
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!response.ok) {
-        logger.error(`Failed to call webhook: ${response.statusText}`);
-      }
+        {
+          numOfAttempts: 3,
+          startingDelay: 1_000,
+          retry: (e, attemptNumber) => {
+            logger.warn(
+              `Webhook attempt ${attemptNumber} failed: ${e instanceof Error ? e.message : String(e)}`,
+            );
+            return true;
+          },
+        },
+      );
       logger.info(`Webhook called successfully`);
     } catch (e) {
-      logger.error(`Failed to call webhook`, e);
+      logger.error(`Failed to call webhook after 3 attempts`, e);
     }
   }
 }
