@@ -501,52 +501,41 @@ async function runPipelineBatches({
     const batchNumber = i / concurrency + 1;
     logger.info(`Start batch ${batchNumber} of ${totalNumberOfBatches}`);
 
-    let browser: Browser;
-    try {
-      browser = await launchBrowserFn();
-    } catch (e) {
-      logger.error(
-        `[Browser] Failed to launch browser for batch ${batchNumber}`,
-        e,
-      );
-      for (let j = i; j < urlsToRender.length; j++) {
-        const failedUrl = urlsToRender[j]!;
-        pipelineResults.push({
-          url: failedUrl,
-          cacheTtl: cacheTtlMap.get(failedUrl) ?? 604800,
-          isRendered: false,
-          isAnalyzed: false,
-          isCachedToR2: false,
-          isCachedToKv: false,
-        });
-      }
-      break;
-    }
-
     const batchUrls = urlsToRender.slice(i, i + concurrency);
-    try {
-      const batchResults = await Promise.all(
-        batchUrls.map((url, index) =>
-          runPipeline({
+    const batchResults = await Promise.all(
+      batchUrls.map(async (url, index) => {
+        let browser: Browser;
+        try {
+          browser = await launchBrowserFn();
+        } catch (e) {
+          logger.error(`[Browser] Failed to launch browser for ${url}`, e);
+          return {
+            url,
+            cacheTtl: cacheTtlMap.get(url) ?? 604800,
+            isRendered: false,
+            isAnalyzed: false,
+            isCachedToR2: false,
+            isCachedToKv: false,
+          } satisfies PipelineResult;
+        }
+        try {
+          return await runPipeline({
             pipelineNumber: processedCount + index + 1,
             urlToRender: url,
             cacheTtl: cacheTtlMap.get(url) ?? 604800,
             config,
             browser,
-          }),
-        ),
-      );
-      pipelineResults.push(...batchResults);
-      processedCount += batchUrls.length;
-    } finally {
-      await browser.close().catch((closeError) => {
-        logger.debug(
-          `Failed to close browser after batch ${batchNumber}`,
-          closeError,
-        );
-      });
-      logger.info(`Browser closed after batch ${batchNumber}`);
-    }
+          });
+        } finally {
+          await browser.close().catch((closeError) => {
+            logger.debug(`Failed to close browser for ${url}`, closeError);
+          });
+          logger.info(`Browser closed for ${extractPathFromUrl(url)}`);
+        }
+      }),
+    );
+    pipelineResults.push(...batchResults);
+    processedCount += batchUrls.length;
   }
 
   const resultMap = new Map<string, PipelineResult>();

@@ -371,6 +371,7 @@ export class RenderEngine {
       "facebook.com",
       "www.facebook.com",
       "connect.facebook.net",
+      "brilliantlocco.com",
       "doubleclick.net",
       "googlesyndication.com",
       "hotjar.com",
@@ -405,13 +406,18 @@ export class RenderEngine {
 
   private async checkAppSignal({ page }: { page: Page }): Promise<boolean> {
     try {
-      const result = await page.evaluate(() => {
-        // @ts-expect-error - custom window properties
-        const ready = window.prerenderReady as boolean;
-        // @ts-expect-error - custom window properties
-        const snapshot = window.htmlSnapshot as boolean;
-        return ready === true || snapshot === true;
-      });
+      const result = await Promise.race([
+        page.evaluate(() => {
+          // @ts-expect-error - custom window properties
+          const ready = window.prerenderReady as boolean;
+          // @ts-expect-error - custom window properties
+          const snapshot = window.htmlSnapshot as boolean;
+          return ready === true || snapshot === true;
+        }),
+        new Promise<boolean>((resolve) =>
+          setTimeout(() => resolve(false), 1000),
+        ),
+      ]);
 
       return result;
     } catch {
