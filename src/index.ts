@@ -314,7 +314,7 @@ async function launchBrowser(): Promise<Browser> {
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-gpu",
+        // "--disable-gpu",
         "--disable-dev-shm-usage",
         "--disable-extensions",
         "--no-first-run",
