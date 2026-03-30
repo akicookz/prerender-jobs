@@ -217,14 +217,9 @@ export class RenderEngine {
       }
       // Add the internal prerender header only to same-origin requests
       const reqHost = url.hostname;
-      const reqPath = url.pathname;
       const headers = req.headers();
       if (reqHost === targetHost) {
         headers[INTERNAL_PRERENDER_HEADER] = "1";
-      } else if (this.isIgnoredHost(reqHost) || this.isIgnoredPath(reqPath)) {
-        this._logger.debug(`[Prerender] Ignoring request to ${req.url()}`);
-        req.abort().catch(() => void 0);
-        return;
       }
       req.continue({ headers }).catch(() => {
         // If continue fails (e.g. request already handled), ignore
@@ -234,7 +229,7 @@ export class RenderEngine {
       outgoingRequests.add(req);
 
       try {
-        if (this.shouldTrackReq({ req, targetHost })) {
+        if (this.shouldTrackReq({ req, targetHost, path: url.pathname })) {
           firstPartyReqPending.add(req);
         }
       } catch {
@@ -314,9 +309,11 @@ export class RenderEngine {
   private shouldTrackReq({
     req,
     targetHost,
+    path,
   }: {
     req: HTTPRequest;
     targetHost: string;
+    path: string;
   }): boolean {
     const trackResourceTypes = new Set([
       "document",
@@ -329,6 +326,11 @@ export class RenderEngine {
     try {
       const host = getHostname(req.url());
       if (!host) {
+        return false;
+      }
+
+      if (this.isIgnoredHost(host) || this.isIgnoredPath(path)) {
+        this._logger.debug(`[Prerender] Ignoring request to ${req.url()}`);
         return false;
       }
 
