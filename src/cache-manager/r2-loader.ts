@@ -163,7 +163,7 @@ export class R2Loader {
       url: this._targetUrl,
       objectKey,
       digest,
-      createdAt: DateTime.now().toISO(),
+      createdAt: new Date().toISOString(),
       contentType: "text/html; charset=utf-8",
       contentLength,
       cacheVersion: CACHE_VERSION,
@@ -212,7 +212,7 @@ export class R2Loader {
       .replace(/\/+/, "/")
       .replace(/\//g, "_");
     const base = safePath || "root";
-    const ts = DateTime.now().toISO().replace(/[:.]/g, "");
+    const ts = new Date().toISOString().replace(/[:.]/g, "");
     return `${CACHE_VERSION}/${safeHost}/${base}_${digest.slice(
       0,
       16,
