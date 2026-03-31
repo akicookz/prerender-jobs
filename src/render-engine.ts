@@ -2,7 +2,7 @@ import { Browser, ConsoleMessage, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { AppLogger } from "./logger";
 
-const DEFAULT_RENDER_TIMEOUT = 50_000; // 50 seconds
+const DEFAULT_RENDER_TIMEOUT = 55_000; // 55 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 const MAX_NAVIGATIONS = 10;
 const MAX_RENDER_ATTEMPTS = 2;
@@ -257,7 +257,7 @@ export class RenderEngine {
     this._logger.debug(`[Prerender] Navigating to ${this._url}`);
     const response = await page.goto(this._url, {
       waitUntil: "domcontentloaded",
-      timeout: 15_000,
+      timeout: 20_000,
     });
     const navEndTimestamp = Date.now();
     this._logger.debug(
