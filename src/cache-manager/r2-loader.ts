@@ -2,7 +2,6 @@ import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { AppLogger } from "../logger";
 import { CACHE_VERSION, KvRecord } from "./type";
 import { PageSeoAnalysis } from "../seo-analyzer/type";
-import { DateTime } from "luxon";
 
 export class R2Loader {
   private readonly _targetUrl: string;
