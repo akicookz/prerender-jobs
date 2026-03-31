@@ -2,7 +2,7 @@ import { Browser, ConsoleMessage, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { AppLogger } from "./logger";
 
-const DEFAULT_RENDER_TIMEOUT = 65_000; // 65 seconds
+const DEFAULT_RENDER_TIMEOUT = 50_000; // 50 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 const MAX_NAVIGATIONS = 10;
 const MAX_RENDER_ATTEMPTS = 2;
@@ -256,8 +256,8 @@ export class RenderEngine {
     const navStartTimestamp = Date.now();
     this._logger.debug(`[Prerender] Navigating to ${this._url}`);
     const response = await page.goto(this._url, {
-      waitUntil: "load",
-      timeout: 30_000,
+      waitUntil: "domcontentloaded",
+      timeout: 15_000,
     });
     const navEndTimestamp = Date.now();
     this._logger.debug(
@@ -402,6 +402,11 @@ export class RenderEngine {
       "mouseflow.com",
       "optimizely.com",
       "cloudflareinsights.com",
+      "radar.snitcher.com",
+      "liadm.com",
+      "js.zi-scripts.com",
+      "ads.linkedin.com",
+      "kular.ai",
     ];
     return ignoredHosts.some((h) => host === h || host.endsWith(`.${h}`));
   }
