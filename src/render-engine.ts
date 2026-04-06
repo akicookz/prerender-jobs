@@ -190,12 +190,12 @@ export class RenderEngine {
     // Detect navigation loops (e.g., infinite redirect between routes)
     let navigationCount = 0;
     page.on("framenavigated", (frame) => {
-      if (frame.parentFrame() !== null) {
-        return;
-      }
       this._logger.debug(`[FrameNavigated] ${frame.url()}`);
       const frameHost = getHostname(frame.url());
       if (frameHost !== targetHost) {
+        return;
+      }
+      if (frame.parentFrame() !== null) {
         return;
       }
       navigationCount++;
