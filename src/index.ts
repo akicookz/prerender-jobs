@@ -496,46 +496,129 @@ async function runPipelineBatches({
     logger.info(`${INDENT}↳ SKIPPING CACHING: SKIP_CACHE_SYNC is true`);
   }
 
-  let processedCount = 0;
-  for (let i = 0; i < urlsToRender.length; i += concurrency) {
-    const batchNumber = i / concurrency + 1;
-    logger.info(`Start batch ${batchNumber} of ${totalNumberOfBatches}`);
+  const REFRESH_EVERY_BATCHES = 20;
 
-    const batchUrls = urlsToRender.slice(i, i + concurrency);
-    const batchResults = await Promise.all(
-      batchUrls.map(async (url, index) => {
-        let browser: Browser;
+  // Allocate one browser per stream (one per concurrency slot) up front.
+  const browsers: (Browser | null)[] = new Array<Browser | null>(
+    concurrency,
+  ).fill(null);
+  for (let slot = 0; slot < concurrency; slot++) {
+    try {
+      browsers[slot] = await launchBrowserFn();
+    } catch (e) {
+      logger.error(`[Browser] Failed to launch browser for stream ${slot}`, e);
+      browsers[slot] = null;
+    }
+  }
+
+  const ensureHealthy = async (slot: number): Promise<Browser | null> => {
+    const current = browsers[slot];
+    if (current && current.connected) {
+      return current;
+    }
+    if (current) {
+      await current.close().catch(() => {});
+    }
+    try {
+      const fresh = await launchBrowserFn();
+      browsers[slot] = fresh;
+      logger.info(`[Browser] Stream ${slot} browser refreshed`);
+      return fresh;
+    } catch (e) {
+      logger.error(
+        `[Browser] Failed to relaunch browser for stream ${slot}`,
+        e,
+      );
+      browsers[slot] = null;
+      return null;
+    }
+  };
+
+  const refreshAllBrowsers = async (reason: string): Promise<void> => {
+    logger.info(`[Browser] Refreshing all ${concurrency} browsers (${reason})`);
+    await Promise.all(
+      browsers.map(async (b, i) => {
+        if (b) await b.close().catch(() => {});
         try {
-          browser = await launchBrowserFn();
+          browsers[i] = await launchBrowserFn();
         } catch (e) {
-          logger.error(`[Browser] Failed to launch browser for ${url}`, e);
-          return {
-            url,
-            cacheTtl: cacheTtlMap.get(url) ?? 604800,
-            isRendered: false,
-            isAnalyzed: false,
-            isCachedToR2: false,
-            isCachedToKv: false,
-          } satisfies PipelineResult;
-        }
-        try {
-          return await runPipeline({
-            pipelineNumber: processedCount + index + 1,
-            urlToRender: url,
-            cacheTtl: cacheTtlMap.get(url) ?? 604800,
-            config,
-            browser,
-          });
-        } finally {
-          await browser.close().catch((closeError) => {
-            logger.debug(`Failed to close browser for ${url}`, closeError);
-          });
-          logger.info(`Browser closed for ${extractPathFromUrl(url)}`);
+          logger.error(
+            `[Browser] Failed to relaunch browser for stream ${i}`,
+            e,
+          );
+          browsers[i] = null;
         }
       }),
     );
-    pipelineResults.push(...batchResults);
-    processedCount += batchUrls.length;
+  };
+
+  try {
+    let processedCount = 0;
+    for (let i = 0; i < urlsToRender.length; i += concurrency) {
+      const batchNumber = i / concurrency + 1;
+      logger.info(`Start batch ${batchNumber} of ${totalNumberOfBatches}`);
+
+      const batchUrls = urlsToRender.slice(i, i + concurrency);
+      const batchResults = await Promise.all(
+        batchUrls.map(async (url, slot) => {
+          const cacheTtl = cacheTtlMap.get(url) ?? 604800;
+          const browser = await ensureHealthy(slot);
+          if (!browser) {
+            return {
+              url,
+              cacheTtl,
+              isRendered: false,
+              isAnalyzed: false,
+              isCachedToR2: false,
+              isCachedToKv: false,
+            } satisfies PipelineResult;
+          }
+          try {
+            return await runPipeline({
+              pipelineNumber: processedCount + slot + 1,
+              urlToRender: url,
+              cacheTtl,
+              config,
+              browser,
+            });
+          } catch (e) {
+            logger.error(
+              `[Stream ${slot}] Pipeline threw for ${extractPathFromUrl(url)}`,
+              e,
+            );
+            // If the browser died mid-render, drop it so the next batch relaunches.
+            const b = browsers[slot];
+            if (b && !b.connected) {
+              await b.close().catch(() => {});
+              browsers[slot] = null;
+            }
+            return {
+              url,
+              cacheTtl,
+              isRendered: false,
+              isAnalyzed: false,
+              isCachedToR2: false,
+              isCachedToKv: false,
+            } satisfies PipelineResult;
+          }
+        }),
+      );
+      pipelineResults.push(...batchResults);
+      processedCount += batchUrls.length;
+
+      const remainingUrls = urlsToRender.length - processedCount;
+      if (
+        batchNumber % REFRESH_EVERY_BATCHES === 0 &&
+        remainingUrls > 0
+      ) {
+        await refreshAllBrowsers(`every ${REFRESH_EVERY_BATCHES} batches`);
+      }
+    }
+  } finally {
+    await Promise.all(
+      browsers.map((b) => (b ? b.close().catch(() => {}) : Promise.resolve())),
+    );
+    logger.info(`[Browser] All stream browsers closed`);
   }
 
   const resultMap = new Map<string, PipelineResult>();
