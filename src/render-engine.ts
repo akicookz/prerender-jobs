@@ -50,7 +50,8 @@ export class RenderEngine {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= MAX_RENDER_ATTEMPTS; attempt++) {
-      const page = await this._browser.newPage();
+      const context = await this._browser.createBrowserContext();
+      const page = await context.newPage();
 
       this.attachDebugListeners(page);
 
@@ -88,6 +89,9 @@ export class RenderEngine {
       } finally {
         await page.close().catch((e) => {
           this._logger.debug("[Prerender] Failed to close page", e);
+        });
+        await context.close().catch((e) => {
+          this._logger.debug("[Prerender] Failed to close context", e);
         });
       }
     }
