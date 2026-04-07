@@ -318,21 +318,10 @@ function deduplicateTitles(head: HTMLElement): void {
 }
 
 function deduplicateBySelector(head: HTMLElement, selector: string): void {
-  const elements = head.querySelectorAll(selector);
+  const elements = [...head.querySelectorAll(selector)] as HTMLElement[];
   if (elements.length <= 1) return;
 
-  // Helmet-marked wins, otherwise last wins
-  let winner: HTMLElement | null = null;
-  for (const el of elements) {
-    if (el.getAttribute("data-rh") === "true") {
-      winner = el;
-      break;
-    }
-  }
-  if (!winner) {
-    winner = elements[elements.length - 1]!;
-  }
-
+  const winner = pickMetaWinner(elements);
   for (const el of elements) {
     if (el !== winner) el.remove();
   }
