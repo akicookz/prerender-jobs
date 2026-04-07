@@ -295,27 +295,21 @@ function deduplicateTitles(head: HTMLElement): void {
   const titles = head.querySelectorAll("title");
   if (titles.length <= 1) return;
 
-  // Helmet-marked wins, otherwise last wins
-  let winner: HTMLElement | null = null;
-  for (const el of titles) {
-    if (el.getAttribute("data-rh") === "true") {
-      winner = el;
-      break;
-    }
+  const elements = [...titles] as HTMLElement[];
+  const hasText = (el: HTMLElement) => (el.textContent ?? "").trim() !== "";
+  let winner: HTMLElement | undefined = elements.find(
+    (el) => el.getAttribute("data-rh") === "true" && hasText(el),
+  );
+  if (!winner) {
+    winner = [...elements].reverse().find(
+      (el) => el.getAttribute("data-rh") !== "true" && hasText(el),
+    );
   }
   if (!winner) {
-    winner = titles[titles.length - 1]!;
+    winner = elements.find((el) => el.getAttribute("data-rh") === "true");
   }
-
-  // If the chosen winner has empty text, prefer the last candidate with text
-  if (!winner.textContent?.trim()) {
-    const reversedTitles = [...titles].reverse();
-    for (const el of reversedTitles) {
-      if (el.textContent?.trim()) {
-        winner = el;
-        break;
-      }
-    }
+  if (!winner) {
+    winner = elements[elements.length - 1]!;
   }
 
   for (const el of titles) {
@@ -362,20 +356,31 @@ function deduplicateOgProperties(head: HTMLElement): void {
 
   for (const [, elements] of groups) {
     if (elements.length <= 1) continue;
-    let winner: HTMLElement | null = null;
-    for (const el of elements) {
-      if (el.getAttribute("data-rh") === "true") {
-        winner = el;
-        break;
-      }
-    }
-    if (!winner) {
-      winner = elements[elements.length - 1]!;
-    }
+    const winner = pickMetaWinner(elements);
     for (const el of elements) {
       if (el !== winner) el.remove();
     }
   }
+}
+
+/**
+ * Pick a winner among duplicate <meta> tags, preferring data-rh="true"
+ * unless its content attribute is empty and another candidate has content.
+ */
+function pickMetaWinner(elements: HTMLElement[]): HTMLElement {
+  const hasContent = (el: HTMLElement) =>
+    (el.getAttribute("content") ?? "").trim() !== "";
+  const rhWithContent = elements.find(
+    (el) => el.getAttribute("data-rh") === "true" && hasContent(el),
+  );
+  if (rhWithContent) return rhWithContent;
+  const nonRhWithContent = [...elements]
+    .reverse()
+    .find((el) => el.getAttribute("data-rh") !== "true" && hasContent(el));
+  if (nonRhWithContent) return nonRhWithContent;
+  const rh = elements.find((el) => el.getAttribute("data-rh") === "true");
+  if (rh) return rh;
+  return elements[elements.length - 1]!;
 }
 
 /**
@@ -396,16 +401,7 @@ function deduplicateTwitterProperties(head: HTMLElement): void {
 
   for (const [, elements] of groups) {
     if (elements.length <= 1) continue;
-    let winner: HTMLElement | null = null;
-    for (const el of elements) {
-      if (el.getAttribute("data-rh") === "true") {
-        winner = el;
-        break;
-      }
-    }
-    if (!winner) {
-      winner = elements[elements.length - 1]!;
-    }
+    const winner = pickMetaWinner(elements);
     for (const el of elements) {
       if (el !== winner) el.remove();
     }
