@@ -104,6 +104,7 @@ async function prepareTargetUrls({
 async function reportResult({
   config,
   urlResultMap,
+  urlToOriginalPathMap,
   domain,
   canonicalDomain,
   originHost,
@@ -115,6 +116,7 @@ async function reportResult({
 }: {
   config: Configuration;
   urlResultMap: Map<string, PipelineResult>;
+  urlToOriginalPathMap: Map<string, string>;
   domain: string;
   canonicalDomain: string;
   originHost: string;
@@ -169,6 +171,8 @@ async function reportResult({
       failedToSyncUrls: [],
     },
   );
+  const resolvePath = (url: string) =>
+    urlToOriginalPathMap.get(url) ?? extractPathFromUrl(url);
   const resultBody: ReportResultBody = {
     batch_id: config.batchId,
     user_id: userId,
@@ -186,11 +190,11 @@ async function reportResult({
     finished_at: DateTime.fromMillis(completedAt).toUTC().toISO()!,
     failed: {
       failed_to_render: {
-        paths: failedToRenderUrls.map((url) => extractPathFromUrl(url)),
+        paths: failedToRenderUrls.map(resolvePath),
         count: failedToRenderUrls.length,
       },
       failed_to_sync: {
-        paths: failedToSyncUrls.map((url) => extractPathFromUrl(url)),
+        paths: failedToSyncUrls.map(resolvePath),
         count: failedToSyncUrls.length,
       },
     },
@@ -265,7 +269,7 @@ async function reportResult({
   if (config.webhookUrl) {
     const webhookBody = JSON.stringify({
       ...resultBody,
-      success_paths: successUrls.map((url) => extractPathFromUrl(url)),
+      success_paths: successUrls.map(resolvePath),
     });
     const curlCommand = `curl -X POST '${config.webhookUrl}' -H 'Content-Type: application/json' -H 'x-webhook-signature: ${config.webhookSignature ?? ""}' -d '${webhookBody.replace(/'/g, "'\\''")}'`;
     logger.info(`Calling webhook endpoint: ${config.webhookUrl}`);
@@ -731,9 +735,11 @@ async function main(): Promise<void> {
   // STEP 1 : Prepare target URLs
   // Build URL-to-TTL map from pathsList
   const cacheTtlMap = new Map<string, number>();
+  const urlToOriginalPathMap = new Map<string, string>();
   const urlsFromPaths = config.pathsList.map((entry) => {
     const url = normalizeUrl(`${config.baseUrl}${entry.path}`);
     cacheTtlMap.set(url, entry.ttl);
+    urlToOriginalPathMap.set(url, entry.path);
     return url;
   });
 
@@ -824,6 +830,7 @@ async function main(): Promise<void> {
   await reportResult({
     config,
     urlResultMap,
+    urlToOriginalPathMap,
     domain: config.domain,
     canonicalDomain: config.canonicalDomain,
     originHost: config.originHost,
