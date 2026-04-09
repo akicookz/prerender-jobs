@@ -228,20 +228,20 @@ async function reportResult({
     const resultBodyForTelegram = structuredClone(resultBody);
     const allFailedToRenderPaths =
       resultBodyForTelegram.failed.failed_to_render.paths;
-    if (allFailedToRenderPaths.length > 50) {
+    if (allFailedToRenderPaths.length > 20) {
       resultBodyForTelegram.failed.failed_to_render.paths =
-        allFailedToRenderPaths.slice(0, 50);
+        allFailedToRenderPaths.slice(0, 20);
       resultBodyForTelegram.failed.failed_to_render.paths.push(
-        `...${allFailedToRenderPaths.length - 50} more`,
+        `...${allFailedToRenderPaths.length - 20} more`,
       );
     }
     const allFailedToSyncPaths =
       resultBodyForTelegram.failed.failed_to_sync.paths;
-    if (allFailedToSyncPaths.length > 50) {
+    if (allFailedToSyncPaths.length > 20) {
       resultBodyForTelegram.failed.failed_to_sync.paths =
-        allFailedToSyncPaths.slice(0, 50);
+        allFailedToSyncPaths.slice(0, 20);
       resultBodyForTelegram.failed.failed_to_sync.paths.push(
-        `...${allFailedToSyncPaths.length - 50} more`,
+        `...${allFailedToSyncPaths.length - 20} more`,
       );
     }
     try {
@@ -611,10 +611,7 @@ async function runPipelineBatches({
       processedCount += batchUrls.length;
 
       const remainingUrls = urlsToRender.length - processedCount;
-      if (
-        batchNumber % REFRESH_EVERY_BATCHES === 0 &&
-        remainingUrls > 0
-      ) {
+      if (batchNumber % REFRESH_EVERY_BATCHES === 0 && remainingUrls > 0) {
         await refreshAllBrowsers(`every ${REFRESH_EVERY_BATCHES} batches`);
       }
     }
