@@ -493,6 +493,8 @@ async function runPipelineBatches({
   launchBrowserFn: () => Promise<Browser>;
 }): Promise<{ resultMap: Map<string, PipelineResult> }> {
   const pipelineResults: PipelineResult[] = [];
+  // Cap concurrency to the number of URLs so we don't launch idle browsers.
+  concurrency = Math.min(concurrency, urlsToRender.length || 1);
   const totalNumberOfBatches = Math.ceil(urlsToRender.length / concurrency);
   logger.info(`Running pipeline batches with concurrency: ${concurrency}`);
   logger.info(`${INDENT}↳ ${totalNumberOfBatches} batches`);
