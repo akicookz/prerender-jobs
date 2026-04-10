@@ -301,9 +301,9 @@ function deduplicateTitles(head: HTMLElement): void {
     (el) => el.getAttribute("data-rh") === "true" && hasText(el),
   );
   if (!winner) {
-    winner = [...elements].reverse().find(
-      (el) => el.getAttribute("data-rh") !== "true" && hasText(el),
-    );
+    winner = [...elements]
+      .reverse()
+      .find((el) => el.getAttribute("data-rh") !== "true" && hasText(el));
   }
   if (!winner) {
     winner = elements.find((el) => el.getAttribute("data-rh") === "true");
@@ -792,56 +792,71 @@ function deriveLocale(root: HTMLElement): string {
 // -- Head tag reordering (migrated from RenderEngine) --
 
 function reorderHeadTags(head: HTMLElement): void {
-  // Collect tags to hoist (in reverse priority order — we'll prepend each)
-  const tagsToHoist: HTMLElement[] = [];
+  // Assign a sort-priority bucket to each child element.
+  // Lower number = closer to the top of <head>.
+  //   0: <meta charset>
+  //   1: <meta name="viewport">
+  //   2: <title>
+  //   3: <meta name="description">
+  //   4: <meta property="og:*">  (OG tags)
+  //   5: <meta name="twitter:*"> (Twitter tags)
+  //   6: everything else
 
-  // 4. data-rh="true" tags (lowest priority among hoisted)
-  const rhTags = head.querySelectorAll("[data-rh]");
-  for (const el of rhTags) {
-    tagsToHoist.push(el);
+  const children = [...head.childNodes];
+  const htmlByBucket: string[][] = [[], [], [], [], [], [], []];
+
+  for (const child of children) {
+    const html = (child as HTMLElement).outerHTML ?? child.toString();
+    const bucket = classifyHeadChild(child as HTMLElement);
+    htmlByBucket[bucket]!.push(html);
+    child.remove();
   }
 
-  // 3. <title>
-  const titles = head.querySelectorAll("title");
-  for (const el of titles) {
-    // Don't double-add if it also has data-rh
-    if (!el.hasAttribute("data-rh")) {
-      tagsToHoist.push(el);
-    }
-  }
+  // Re-insert in bucket order
+  const combined = htmlByBucket.flat().join("");
+  head.insertAdjacentHTML("afterbegin", combined);
+}
 
-  // 2. <meta name="viewport">
-  const viewports = head.querySelectorAll('meta[name="viewport"]');
-  for (const el of viewports) {
-    if (!el.hasAttribute("data-rh")) {
-      tagsToHoist.push(el);
-    }
-  }
+/** Classify a head child node into a sort-priority bucket (0–6). */
+function classifyHeadChild(el: HTMLElement): number {
+  // Text / comment nodes → rest
+  if (!el.tagName) return 6;
 
-  // 1. <meta charset> (highest priority)
-  const charsets = head.querySelectorAll("meta[charset]");
-  for (const el of charsets) {
-    if (!el.hasAttribute("data-rh")) {
-      tagsToHoist.push(el);
-    }
-  }
+  const tag = el.tagName.toLowerCase();
 
-  if (tagsToHoist.length === 0) return;
+  // <meta charset>
+  if (tag === "meta" && el.hasAttribute("charset")) return 0;
+  // <meta http-equiv="Content-Type"> (charset equivalent)
+  if (
+    tag === "meta" &&
+    el.getAttribute("http-equiv")?.toLowerCase() === "content-type"
+  )
+    return 0;
 
-  // Capture outerHTML before removing (since remove() destroys them)
-  const hoistedHtml = tagsToHoist.map((el) => el.outerHTML);
+  // <meta name="viewport">
+  if (tag === "meta" && el.getAttribute("name")?.toLowerCase() === "viewport")
+    return 1;
 
-  // Remove all from their current positions
-  for (const el of tagsToHoist) {
-    el.remove();
-  }
+  // <title>
+  if (tag === "title") return 2;
 
-  // Build the combined hoisted block and insert once at the beginning of <head>.
-  // Final order: charset -> viewport -> title -> data-rh -> rest
-  // tagsToHoist is ordered: [data-rh..., title..., viewport..., charset...]
-  // so reversing gives us: charset, viewport, title, data-rh (the desired order)
-  const combinedHtml = hoistedHtml.reverse().join("");
-  head.insertAdjacentHTML("afterbegin", combinedHtml);
+  // <meta name="description">
+  if (
+    tag === "meta" &&
+    el.getAttribute("name")?.toLowerCase() === "description"
+  )
+    return 3;
+
+  // <meta property="og:*">
+  if (tag === "meta" && el.getAttribute("property")?.startsWith("og:"))
+    return 4;
+
+  // <meta name="twitter:*">
+  if (tag === "meta" && el.getAttribute("name")?.startsWith("twitter:"))
+    return 5;
+
+  // Everything else
+  return 6;
 }
 
 // -- R28 --

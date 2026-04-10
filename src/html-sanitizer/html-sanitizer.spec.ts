@@ -1286,15 +1286,100 @@ describe("head tag reordering", () => {
     expect(titlePos).toBeLessThan(stylesheetPos);
   });
 
-  it("hoists data-rh='true' tags", () => {
+  it("places description after title", () => {
     const html = doc({
-      head: `<link rel="stylesheet" href="/s.css"><meta name="description" content="desc" data-rh="true"><meta charset="utf-8">`,
+      head: `<meta name="description" content="A page"><title>Test</title><meta charset="utf-8">`,
       body: wordsBody(50),
     });
     const result = sanitize(html);
-    const rhPos = result.indexOf('data-rh="true"');
-    const stylesheetPos = result.indexOf("stylesheet");
-    expect(rhPos).toBeLessThan(stylesheetPos);
+    const titlePos = result.indexOf("<title>");
+    const descPos = result.indexOf('name="description"');
+    expect(titlePos).toBeLessThan(descPos);
+  });
+
+  it("places og: tags after description", () => {
+    const html = doc({
+      head: `<meta property="og:title" content="OG Title"><meta name="description" content="A page"><title>Test</title><meta charset="utf-8">`,
+      body: wordsBody(50),
+    });
+    const result = sanitize(html);
+    const descPos = result.indexOf('name="description"');
+    const ogTitlePos = result.indexOf('property="og:title"');
+    expect(descPos).toBeLessThan(ogTitlePos);
+  });
+
+  it("places twitter: tags after og: tags", () => {
+    const html = doc({
+      head: `<meta name="twitter:card" content="summary"><meta property="og:title" content="OG Title"><meta name="description" content="A page"><title>Test</title><meta charset="utf-8">`,
+      body: wordsBody(50),
+    });
+    const result = sanitize(html);
+    const ogTitlePos = result.indexOf('property="og:title"');
+    const twitterPos = result.indexOf('name="twitter:card"');
+    expect(ogTitlePos).toBeLessThan(twitterPos);
+  });
+
+  it("places remaining tags after twitter: tags", () => {
+    const html = doc({
+      head: `<link rel="icon" href="/favicon.ico"><meta name="twitter:card" content="summary"><meta property="og:title" content="OG Title"><meta name="description" content="A page"><title>Test</title><meta charset="utf-8">`,
+      body: wordsBody(50),
+    });
+    const result = sanitize(html);
+    const twitterPos = result.indexOf('name="twitter:card"');
+    const iconPos = result.indexOf('rel="icon"');
+    expect(twitterPos).toBeLessThan(iconPos);
+  });
+
+  it("enforces full ordering: charset > viewport > title > description > og > twitter > rest", () => {
+    // Intentionally scrambled order
+    const html = doc({
+      head: `
+        <link rel="canonical" href="https://example.com/page">
+        <meta name="twitter:title" content="Tw Title">
+        <meta property="og:description" content="OG Desc">
+        <meta name="description" content="A page">
+        <title>Test</title>
+        <meta name="viewport" content="width=device-width">
+        <meta charset="utf-8">
+        <meta property="og:title" content="OG Title">
+        <meta name="twitter:card" content="summary">
+        <link rel="icon" href="/favicon.ico">
+      `,
+      body: wordsBody(50),
+    });
+    const result = sanitize(html);
+
+    const charsetPos = result.indexOf("charset");
+    const viewportPos = result.indexOf("viewport");
+    const titlePos = result.indexOf("<title>");
+    const descPos = result.indexOf('name="description"');
+    const ogTitlePos = result.indexOf('property="og:title"');
+    const ogDescPos = result.indexOf('property="og:description"');
+    const twitterCardPos = result.indexOf('name="twitter:card"');
+    const twitterTitlePos = result.indexOf('name="twitter:title"');
+    const canonicalPos = result.indexOf('rel="canonical"');
+    const iconPos = result.indexOf('rel="icon"');
+
+    // charset < viewport < title < description
+    expect(charsetPos).toBeLessThan(viewportPos);
+    expect(viewportPos).toBeLessThan(titlePos);
+    expect(titlePos).toBeLessThan(descPos);
+
+    // description < all og: tags
+    expect(descPos).toBeLessThan(ogTitlePos);
+    expect(descPos).toBeLessThan(ogDescPos);
+
+    // all og: tags < all twitter: tags
+    expect(ogTitlePos).toBeLessThan(twitterCardPos);
+    expect(ogDescPos).toBeLessThan(twitterCardPos);
+    expect(ogTitlePos).toBeLessThan(twitterTitlePos);
+    expect(ogDescPos).toBeLessThan(twitterTitlePos);
+
+    // all twitter: tags < rest (canonical, icon)
+    expect(twitterCardPos).toBeLessThan(canonicalPos);
+    expect(twitterTitlePos).toBeLessThan(canonicalPos);
+    expect(twitterCardPos).toBeLessThan(iconPos);
+    expect(twitterTitlePos).toBeLessThan(iconPos);
   });
 
   it("preserves remaining head content after hoisted tags", () => {
