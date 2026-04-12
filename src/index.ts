@@ -739,7 +739,7 @@ async function main(): Promise<void> {
     const url = normalizeUrl(`${config.baseUrl}${entry.path}`);
     cacheTtlMap.set(url, entry.ttl);
     urlToOriginalPathMap.set(url, entry.path);
-    return url;
+    return encodeURI(url);
   });
 
   let urlsToRender: string[] = [...urlsFromPaths];
