@@ -266,6 +266,8 @@ async function reportResult({
     }
   }
 
+  console.log(JSON.stringify(successUrls.map(resolvePath), null, 2));
+
   if (config.webhookUrl) {
     const webhookBody = JSON.stringify({
       ...resultBody,
@@ -737,9 +739,10 @@ async function main(): Promise<void> {
   const urlToOriginalPathMap = new Map<string, string>();
   const urlsFromPaths = config.pathsList.map((entry) => {
     const url = normalizeUrl(`${config.baseUrl}${entry.path}`);
-    cacheTtlMap.set(url, entry.ttl);
-    urlToOriginalPathMap.set(url, entry.path);
-    return encodeURI(url);
+    const encodedUrl = encodeURI(url);
+    cacheTtlMap.set(encodedUrl, entry.ttl);
+    urlToOriginalPathMap.set(encodedUrl, entry.path);
+    return encodedUrl;
   });
 
   let urlsToRender: string[] = [...urlsFromPaths];
