@@ -266,8 +266,6 @@ async function reportResult({
     }
   }
 
-  console.log(JSON.stringify(successUrls.map(resolvePath), null, 2));
-
   if (config.webhookUrl) {
     const webhookBody = JSON.stringify({
       ...resultBody,
