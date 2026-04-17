@@ -235,14 +235,12 @@ async function reportResult({
     const lines = [
       isRetryRun ? `*🔁 Retry run*` : `*⚠️ Run finished with failures*`,
       ``,
-      `*batch:* ${escapeMarkdownV2(resultBody.batch_id)}`,
+      `*batch:* \`${escapeMarkdownV2(resultBody.batch_id)}\``,
       `*domain:* ${escapeMarkdownV2(resultBody.domain)}`,
       `*origin host:* ${escapeMarkdownV2(resultBody.origin_host)}`,
-      `*execution:* ${escapeMarkdownV2(resultBody.google_cloud_execution_id)}`,
+      `*execution:* \`${escapeMarkdownV2(resultBody.google_cloud_execution_id)}\``,
       ``,
-      `*✅ success:* ${successUrls.length}`,
-      `*❌ failed to render:* ${failedToRenderUrls.length}`,
-      `*❌ failed to cache:* ${failedToSyncUrls.length}`,
+      `*result:* success: ${successUrls.length}, render\\_failed: ${failedToRenderUrls.length}, sync\\_failed: ${failedToSyncUrls.length}`,
     ];
     if (isRetryRun) {
       lines.push(
@@ -251,7 +249,7 @@ async function reportResult({
       );
       if (parentBatchGroupIds[0]) {
         lines.push(
-          `*retrying batch group:* ${escapeMarkdownV2(parentBatchGroupIds[0])}`,
+          `*retrying batch group:* \`${escapeMarkdownV2(parentBatchGroupIds[0])}\``,
         );
       }
     }
