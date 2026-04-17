@@ -225,37 +225,30 @@ async function reportResult({
   ) {
     logger.info(`Sending result to Telegram chat: ${config.telegramChatId}`);
     const telegramBot = new TelegramBot(config.telegramBotToken);
-    const resultBodyForTelegram = structuredClone(resultBody);
-    const allFailedToRenderPaths =
-      resultBodyForTelegram.failed.failed_to_render.paths;
-    if (allFailedToRenderPaths.length > 20) {
-      resultBodyForTelegram.failed.failed_to_render.paths =
-        allFailedToRenderPaths.slice(0, 20);
-      resultBodyForTelegram.failed.failed_to_render.paths.push(
-        `...${allFailedToRenderPaths.length - 20} more`,
-      );
+    const parentBatchGroupIds =
+      resultBody.retry_options?.parent_batch_group_ids ?? [];
+    const lines = [
+      isRetryRun ? `🔁 Retry run` : `⚠️ Run finished with failures`,
+      ``,
+      `Batch ID: ${resultBody.batch_id}`,
+      `Domain: ${resultBody.domain}`,
+      `Origin host: ${resultBody.origin_host}`,
+      `Execution ID: ${resultBody.google_cloud_execution_id}`,
+      ``,
+      `✅ Success: ${successUrls.length}`,
+      `❌ Failed to render: ${failedToRenderUrls.length}`,
+      `❌ Failed to cache: ${failedToSyncUrls.length}`,
+    ];
+    if (isRetryRun) {
+      lines.push(``, `Retry attempt: ${resultBody.retry_options?.retry_count}`);
+      if (parentBatchGroupIds.length > 0) {
+        lines.push(`Retrying batch group: ${parentBatchGroupIds?.[0]}`);
+      }
     }
-    const allFailedToSyncPaths =
-      resultBodyForTelegram.failed.failed_to_sync.paths;
-    if (allFailedToSyncPaths.length > 20) {
-      resultBodyForTelegram.failed.failed_to_sync.paths =
-        allFailedToSyncPaths.slice(0, 20);
-      resultBodyForTelegram.failed.failed_to_sync.paths.push(
-        `...${allFailedToSyncPaths.length - 20} more`,
-      );
-    }
+    const telegramMessage = lines.join("\n").slice(0, 4096);
     try {
       await Promise.race([
-        telegramBot.sendMessage(
-          config.telegramChatId,
-          `\`\`\`json\n${JSON.stringify(resultBodyForTelegram, null, 2).slice(
-            0,
-            4096,
-          )}\n\`\`\``, // Telegram message length limit is 4096 characters
-          {
-            parse_mode: "MarkdownV2",
-          },
-        ),
+        telegramBot.sendMessage(config.telegramChatId, telegramMessage),
         new Promise((_, reject) =>
           setTimeout(() => reject(new Error("Telegram send timeout")), 10000),
         ),
