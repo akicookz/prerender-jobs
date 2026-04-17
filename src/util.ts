@@ -13,3 +13,11 @@ export function extractPathFromUrl(url: string): string {
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+export function escapeMarkdownV2(text: string): string {
+  return text.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, "\\$&");
+}
+
+export function escapeMarkdownV2Code(text: string): string {
+  return text.replace(/[`\\]/g, "\\$&");
+}

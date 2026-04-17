@@ -16,7 +16,12 @@ import { RenderEngine, type RenderResult } from "./render-engine";
 import { SeoAnalyzer } from "./seo-analyzer/index";
 import type { PageSeoAnalysis } from "./seo-analyzer/type";
 import { SitemapParser } from "./sitemap-parser";
-import { extractPathFromUrl, sleep } from "./util";
+import {
+  escapeMarkdownV2,
+  escapeMarkdownV2Code,
+  extractPathFromUrl,
+  sleep,
+} from "./util";
 
 interface PipelineResult {
   url: string;
@@ -228,27 +233,34 @@ async function reportResult({
     const parentBatchGroupIds =
       resultBody.retry_options?.parent_batch_group_ids ?? [];
     const lines = [
-      isRetryRun ? `🔁 Retry run` : `⚠️ Run finished with failures`,
+      isRetryRun ? `*🔁 Retry run*` : `*⚠️ Run finished with failures*`,
       ``,
-      `Batch ID: ${resultBody.batch_id}`,
-      `Domain: ${resultBody.domain}`,
-      `Origin host: ${resultBody.origin_host}`,
-      `Execution ID: ${resultBody.google_cloud_execution_id}`,
+      `*batch:* ${escapeMarkdownV2(resultBody.batch_id)}`,
+      `*domain:* ${escapeMarkdownV2(resultBody.domain)}`,
+      `*origin host:* ${escapeMarkdownV2(resultBody.origin_host)}`,
+      `*execution:* ${escapeMarkdownV2(resultBody.google_cloud_execution_id)}`,
       ``,
-      `✅ Success: ${successUrls.length}`,
-      `❌ Failed to render: ${failedToRenderUrls.length}`,
-      `❌ Failed to cache: ${failedToSyncUrls.length}`,
+      `*✅ success:* ${successUrls.length}`,
+      `*❌ failed to render:* ${failedToRenderUrls.length}`,
+      `*❌ failed to cache:* ${failedToSyncUrls.length}`,
     ];
     if (isRetryRun) {
-      lines.push(``, `Retry attempt: ${resultBody.retry_options?.retry_count}`);
-      if (parentBatchGroupIds.length > 0) {
-        lines.push(`Retrying batch group: ${parentBatchGroupIds?.[0]}`);
+      lines.push(
+        ``,
+        `*retry attempt:* ${resultBody.retry_options?.retry_count}`,
+      );
+      if (parentBatchGroupIds[0]) {
+        lines.push(
+          `*retrying batch group:* ${escapeMarkdownV2(parentBatchGroupIds[0])}`,
+        );
       }
     }
     const telegramMessage = lines.join("\n").slice(0, 4096);
     try {
       await Promise.race([
-        telegramBot.sendMessage(config.telegramChatId, telegramMessage),
+        telegramBot.sendMessage(config.telegramChatId, telegramMessage, {
+          parse_mode: "MarkdownV2",
+        }),
         new Promise((_, reject) =>
           setTimeout(() => reject(new Error("Telegram send timeout")), 10000),
         ),
@@ -394,13 +406,15 @@ async function runPipeline({
       if (config.telegramBotToken && config.telegramChatId) {
         const telegramBot = new TelegramBot(config.telegramBotToken);
         const message =
-          `⚠️ SEO metadata lost during sanitization\n\nJob ID: ${process.env.CLOUD_RUN_EXECUTION}\nURL: ${urlToRender}\nPath: ${path}\nLost: ${metadataLoss.lostProperties.join(", ")}`.slice(
+          `⚠️ SEO metadata lost during sanitization\n\nJob ID: ${escapeMarkdownV2(process.env.CLOUD_RUN_EXECUTION ?? "")}\nURL: ${escapeMarkdownV2(urlToRender)}\nPath: ${escapeMarkdownV2(path)}\nLost: ${escapeMarkdownV2(metadataLoss.lostProperties.join(", "))}`.slice(
             0,
             4096,
           );
         try {
           await Promise.race([
-            telegramBot.sendMessage(config.telegramChatId, message),
+            telegramBot.sendMessage(config.telegramChatId, message, {
+              parse_mode: "MarkdownV2",
+            }),
             new Promise((_, reject) =>
               setTimeout(
                 () => reject(new Error("Telegram send timeout")),
@@ -860,15 +874,17 @@ main()
         await Promise.race([
           telegramBot.sendMessage(
             telegramChatId,
-            `Failed to execute the job:\n\`\`\`json\n${JSON.stringify(
-              {
-                google_cloud_execution_id:
-                  process.env.CLOUD_RUN_EXECUTION ?? "local",
-                failReason:
-                  error instanceof Error ? error.message : String(error),
-              },
-              null,
-              2,
+            `Failed to execute the job:\n\`\`\`json\n${escapeMarkdownV2Code(
+              JSON.stringify(
+                {
+                  google_cloud_execution_id:
+                    process.env.CLOUD_RUN_EXECUTION ?? "local",
+                  failReason:
+                    error instanceof Error ? error.message : String(error),
+                },
+                null,
+                2,
+              ),
             )}\n\`\`\``.slice(0, 4096),
             {
               parse_mode: "MarkdownV2",
