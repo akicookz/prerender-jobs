@@ -126,13 +126,13 @@ describe("R1: noindex removal", () => {
     expect(result).not.toContain("noindex");
   });
 
-  it("preserves noindex with data-rh='true'", () => {
+  it("strips noindex even when marked with data-rh='true'", () => {
     const html = doc({
       head: `<title>Hello</title><meta name="robots" content="noindex" data-rh="true">`,
       body: wordsBody(100),
     });
     const result = sanitize(html);
-    expect(result).toContain("noindex");
+    expect(result).not.toContain("noindex");
   });
 
   it("preserves noindex when page title contains '404' (soft 404)", () => {

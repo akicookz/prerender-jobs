@@ -278,9 +278,6 @@ function removeNoindexTags(head: HTMLElement, isSoft404: boolean): void {
       const content = el.getAttribute("content") ?? "";
       if (!/noindex/i.test(content)) continue;
 
-      // Exception: keep if explicitly set by app via react-helmet
-      if (el.getAttribute("data-rh") === "true") continue;
-
       // Exception: keep if page is detected as soft 404
       if (isSoft404) continue;
 
