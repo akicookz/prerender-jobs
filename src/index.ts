@@ -63,6 +63,7 @@ interface ReportResultBody {
   };
   retry_options?: {
     parent_batch_group_ids: string[];
+    parent_execution_ids: string[];
     retry_count: number;
   };
 }
@@ -211,18 +212,20 @@ async function reportResult({
     try {
       resultBody.retry_options = JSON.parse(config.retryOptions) as {
         parent_batch_group_ids: string[];
+        parent_execution_ids: string[];
         retry_count: number;
       };
     } catch (e) {
       logger.error(`Failed to parse retry options`, e);
     }
   }
-  const isRetryRun =
+  const isFinalRetryRun =
     resultBody.retry_options?.retry_count &&
     resultBody.retry_options.retry_count > 0;
   const hasFailedCases =
     failedToRenderUrls.length > 0 || failedToSyncUrls.length > 0;
-  const shouldSendToTelegram = hasFailedCases || isRetryRun;
+  const shouldSendToTelegram =
+    isFinalRetryRun || (hasFailedCases && resultBody.source === "manual");
   if (
     config.telegramBotToken &&
     config.telegramChatId &&
@@ -232,27 +235,34 @@ async function reportResult({
     const telegramBot = new TelegramBot(config.telegramBotToken);
     const parentBatchGroupIds =
       resultBody.retry_options?.parent_batch_group_ids ?? [];
+    const parentExecutionIds =
+      resultBody.retry_options?.parent_execution_ids ?? [];
     const lines = [
-      isRetryRun ? `*🔁 Retry run*` : `*⚠️ Run finished with failures*`,
+      isFinalRetryRun
+        ? `*🔁 Final retry run*`
+        : `*⚠️ Manual run finished with failures*`,
       ``,
+      `*source:* ${escapeMarkdownV2(resultBody.source)}`,
       `*batch:* \`${escapeMarkdownV2(resultBody.batch_id)}\``,
+      `*user id:* \`${escapeMarkdownV2(resultBody.user_id)}\``,
       `*domain:* ${escapeMarkdownV2(resultBody.domain)}`,
       `*origin host:* ${escapeMarkdownV2(resultBody.origin_host)}`,
       `*execution:* \`${escapeMarkdownV2(resultBody.google_cloud_execution_id)}\``,
       ``,
       `*result:* success: ${successUrls.length}, render\\_failed: ${failedToRenderUrls.length}, sync\\_failed: ${failedToSyncUrls.length}`,
     ];
-    if (isRetryRun) {
+    if (
+      isFinalRetryRun &&
+      parentBatchGroupIds.length > 0 &&
+      parentBatchGroupIds[0]
+    ) {
       lines.push(
         ``,
-        `*retry attempt:* ${resultBody.retry_options?.retry_count}`,
+        `*parent batch group:* \`${escapeMarkdownV2(parentBatchGroupIds[0])}\``,
+        `*parent executions:* \`${escapeMarkdownV2(parentExecutionIds.join(", "))}\``,
       );
-      if (parentBatchGroupIds[0]) {
-        lines.push(
-          `*retrying batch group:* \`${escapeMarkdownV2(parentBatchGroupIds[0])}\``,
-        );
-      }
     }
+
     const telegramMessage = lines.join("\n").slice(0, 4096);
     try {
       await Promise.race([
