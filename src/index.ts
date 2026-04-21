@@ -221,7 +221,7 @@ async function reportResult({
   }
   const isFinalRetryRun =
     resultBody.retry_options?.retry_count &&
-    resultBody.retry_options.retry_count > 0;
+    resultBody.retry_options.retry_count === 2;
   const hasFailedCases =
     failedToRenderUrls.length > 0 || failedToSyncUrls.length > 0;
   const shouldSendToTelegram =
