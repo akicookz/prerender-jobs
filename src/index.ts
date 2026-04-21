@@ -259,8 +259,12 @@ async function reportResult({
       lines.push(
         ``,
         `*parent batch group:* \`${escapeMarkdownV2(parentBatchGroupIds[0])}\``,
-        `*parent executions:* \`${escapeMarkdownV2(parentExecutionIds.join(", "))}\``,
       );
+      if (parentExecutionIds.length > 0) {
+        lines.push(
+          `*parent executions:* \`${escapeMarkdownV2(parentExecutionIds.join(", "))}\``,
+        );
+      }
     }
 
     const telegramMessage = lines.join("\n").slice(0, 4096);
