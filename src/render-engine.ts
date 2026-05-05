@@ -414,6 +414,7 @@ export class RenderEngine {
       "js.zi-scripts.com",
       "ads.linkedin.com",
       "kular.ai",
+      "mapbox.com",
     ];
     return ignoredHosts.some((h) => host === h || host.endsWith(`.${h}`));
   }
