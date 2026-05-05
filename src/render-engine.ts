@@ -483,9 +483,17 @@ export class RenderEngine {
               }
 
               if (document.documentElement) {
-                const observer = new MutationObserver(() => {
-                  // @ts-expect-error - custom window properties
-                  window.__lastDomChange = Date.now();
+                const observer = new MutationObserver((mutations) => {
+                  for (const m of mutations) {
+                    // Ignore inline style writes — JS animation libs (Framer
+                    // Motion, GSAP, Motion One) write transform/opacity every
+                    // frame and would otherwise pin DOM as "never idle".
+                    if (m.type === "attributes" && m.attributeName === "style")
+                      continue;
+                    // @ts-expect-error - custom window properties
+                    window.__lastDomChange = Date.now();
+                    return;
+                  }
                 });
                 observer.observe(document.documentElement, {
                   childList: true,
