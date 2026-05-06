@@ -3,7 +3,7 @@ import { getHostname } from "tldts";
 import { AppLogger } from "./logger";
 import { RenderTracer } from "./render-tracer";
 
-const DEFAULT_RENDER_TIMEOUT = 65_000; // 65 seconds
+const DEFAULT_RENDER_TIMEOUT = 55_000; // 55 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 const MAX_NAVIGATIONS = 10;
 const MAX_RENDER_ATTEMPTS = 2;
@@ -287,7 +287,7 @@ export class RenderEngine {
     try {
       response = await page.goto(this._url, {
         waitUntil: "domcontentloaded",
-        timeout: 30_000,
+        timeout: 20_000,
       });
     } catch (e) {
       if (tracer) {
