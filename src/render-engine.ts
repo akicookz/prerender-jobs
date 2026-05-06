@@ -1,6 +1,7 @@
 import { Browser, ConsoleMessage, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { AppLogger } from "./logger";
+import { RenderTracer } from "./render-tracer";
 
 const DEFAULT_RENDER_TIMEOUT = 55_000; // 55 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
@@ -179,6 +180,26 @@ export class RenderEngine {
   }
 
   private async renderPageInternal(page: Page): Promise<RenderResult> {
+    const tracer = RenderTracer.enabled()
+      ? RenderTracer.register({ url: this._url, page, logger: this._logger })
+      : null;
+    if (tracer) {
+      await tracer.start();
+    }
+
+    try {
+      return await this.renderPageInternalTraced(page, tracer);
+    } finally {
+      if (tracer) {
+        await tracer.stop().catch(() => void 0);
+      }
+    }
+  }
+
+  private async renderPageInternalTraced(
+    page: Page,
+    tracer: RenderTracer | null,
+  ): Promise<RenderResult> {
     await page.setViewport({ width: 1280, height: 720 });
     await page.setUserAgent({ userAgent: this._userAgent });
     await page.setExtraHTTPHeaders({
@@ -262,10 +283,22 @@ export class RenderEngine {
 
     const navStartTimestamp = Date.now();
     this._logger.debug(`[Prerender] Navigating to ${this._url}`);
-    const response = await page.goto(this._url, {
-      waitUntil: "domcontentloaded",
-      timeout: 20_000,
-    });
+    let response;
+    try {
+      response = await page.goto(this._url, {
+        waitUntil: "domcontentloaded",
+        timeout: 20_000,
+      });
+    } catch (e) {
+      if (tracer) {
+        await tracer
+          .snapshot(
+            `goto-failed after ${Date.now() - navStartTimestamp}ms: ${e instanceof Error ? e.message : String(e)}`,
+          )
+          .catch(() => void 0);
+      }
+      throw e;
+    }
     const navEndTimestamp = Date.now();
     this._logger.debug(
       `[Prerender] Navigation completed in ${navEndTimestamp - navStartTimestamp}ms for ${this._url}`,
