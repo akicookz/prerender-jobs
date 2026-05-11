@@ -41,6 +41,7 @@ enum ConfigEnvVariables {
   RETRY_OPTIONS = "RETRY_OPTIONS",
   REQUEST_SOURCE = "REQUEST_SOURCE",
   CANONICAL_DOMAIN = "CANONICAL_DOMAIN",
+  PRODUCT_TYPE = "PRODUCT_TYPE",
 }
 
 export interface PathEntry {
@@ -95,6 +96,8 @@ export interface Configuration {
   // Telegram chat ID
   telegramChatId?: string;
   retryOptions?: string;
+  // Product type
+  productType: string;
 }
 
 export function loadConfig(): Configuration {
@@ -246,6 +249,10 @@ export function loadConfig(): Configuration {
   // Retry options are optional
   const retryOptions = process.env[ConfigEnvVariables.RETRY_OPTIONS];
 
+  // Product type is optional, default to "website" if not set
+  const productType =
+    process.env[ConfigEnvVariables.PRODUCT_TYPE] || "standard";
+
   return {
     batchId,
     userId,
@@ -272,5 +279,6 @@ export function loadConfig(): Configuration {
     telegramBotToken,
     telegramChatId,
     retryOptions,
+    productType,
   };
 }
