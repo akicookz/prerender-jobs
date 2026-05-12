@@ -758,7 +758,12 @@ async function main(): Promise<void> {
   const urlToOriginalPathMap = new Map<string, string>();
   const urlsFromPaths = config.pathsList.map((entry) => {
     const url = normalizeUrl(`${config.baseUrl}${entry.path}`);
-    const encodedUrl = encodeURI(url);
+    let encodedUrl: string;
+    try {
+      encodedUrl = encodeURI(decodeURI(url));
+    } catch {
+      encodedUrl = url;
+    }
     cacheTtlMap.set(encodedUrl, entry.ttl);
     urlToOriginalPathMap.set(encodedUrl, entry.path);
     return encodedUrl;
