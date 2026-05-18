@@ -39,6 +39,12 @@ export {
   type MetadataLossResult,
 } from "./detect-metadata-loss";
 
+export {
+  extractOversizedDataUrls,
+  restoreDataUrls,
+  type DataUrlExtraction,
+} from "./strip-data-urls";
+
 export function sanitizeHtml({
   html,
   url,

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeHtml } from "./index";
+import {
+  sanitizeHtml,
+  extractOversizedDataUrls,
+  restoreDataUrls,
+} from "./index";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -35,6 +39,20 @@ function sanitize(
 /** Generate body with approximately n words */
 function wordsBody(n: number): string {
   return `<p>${Array.from({ length: n }, (_, i) => `word${i}`).join(" ")}</p>`;
+}
+
+/** Generate a base64-alphabet string of the given length */
+function bigBase64(bytes: number): string {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let out = "";
+  for (let i = 0; i < bytes; i++) out += chars[i % chars.length];
+  return out;
+}
+
+/** Build a `data:<mime>;base64,…` URL whose base64 payload is `bytes` long */
+function bigDataUrl(mime: string, bytes: number): string {
+  return `data:${mime};base64,${bigBase64(bytes)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1693,5 +1711,186 @@ describe("full sanitization (combined)", () => {
 
     // --- No excessive whitespace ---
     expect(result).not.toMatch(/\n\s*\n\s*\n\s*\n/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractOversizedDataUrls — strip oversized base64 data URLs before parsing
+// ---------------------------------------------------------------------------
+describe("extractOversizedDataUrls", () => {
+  it("strips data URLs over the default 10,000 byte threshold", () => {
+    const url = bigDataUrl("image/png", 12_000);
+    const html = `<meta property="og:image" content="${url}">`;
+    const { html: stripped, urlMap } = extractOversizedDataUrls(html);
+    expect(stripped).not.toContain(url);
+    expect(stripped).toMatch(/__OVERSIZED_DATA_URL_[a-f0-9]+_0__/);
+    expect(urlMap.size).toBe(1);
+    expect([...urlMap.values()][0]).toBe(url);
+  });
+
+  it("leaves small data URLs untouched", () => {
+    const url = "data:image/png;base64,iVBORw0KGgo";
+    const html = `<meta property="og:image" content="${url}">`;
+    const { html: stripped, urlMap } = extractOversizedDataUrls(html);
+    expect(stripped).toBe(html);
+    expect(urlMap.size).toBe(0);
+  });
+
+  it("is a no-op when no data URLs are present", () => {
+    const html = `<p>plain content with no images</p>`;
+    const { html: stripped, urlMap } = extractOversizedDataUrls(html);
+    expect(stripped).toBe(html);
+    expect(urlMap.size).toBe(0);
+  });
+
+  it("respects a custom threshold", () => {
+    const url = bigDataUrl("image/png", 200);
+    const html = `<img src="${url}">`;
+    const { html: stripped, urlMap } = extractOversizedDataUrls(html, 100);
+    expect(stripped).not.toContain(url);
+    expect(urlMap.size).toBe(1);
+  });
+
+  it("extracts multiple oversized data URLs and assigns unique placeholders", () => {
+    const u1 = bigDataUrl("image/png", 12_000);
+    const u2 = bigDataUrl("image/jpeg", 15_000);
+    const u3 = bigDataUrl("image/gif", 11_000);
+    const html = `<meta property="og:image" content="${u1}"><img src="${u2}"><img src="${u3}">`;
+    const { html: stripped, urlMap } = extractOversizedDataUrls(html);
+    expect(urlMap.size).toBe(3);
+    expect(stripped).not.toContain(u1);
+    expect(stripped).not.toContain(u2);
+    expect(stripped).not.toContain(u3);
+    const keys = [...urlMap.keys()];
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  it("strips only oversized URLs in a mixed document", () => {
+    const big = bigDataUrl("image/png", 12_000);
+    const small = "data:image/png;base64,iVBORw0KGgo";
+    const html = `<img src="${big}"><img src="${small}">`;
+    const { html: stripped, urlMap } = extractOversizedDataUrls(html);
+    expect(urlMap.size).toBe(1);
+    expect([...urlMap.values()][0]).toBe(big);
+    expect(stripped).toContain(small);
+    expect(stripped).not.toContain(big);
+  });
+
+  it("recognizes various MIME types (jpeg, gif, webp, svg+xml)", () => {
+    const mimes = ["image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
+    const urls = mimes.map((m) => bigDataUrl(m, 11_000));
+    const html = urls.map((u) => `<img src="${u}">`).join("");
+    const { urlMap } = extractOversizedDataUrls(html);
+    expect(urlMap.size).toBe(4);
+  });
+
+  it("uses a different random token per call so placeholders cannot collide", () => {
+    const url = bigDataUrl("image/png", 11_000);
+    const html = `<img src="${url}">`;
+    const r1 = extractOversizedDataUrls(html);
+    const r2 = extractOversizedDataUrls(html);
+    const key1 = [...r1.urlMap.keys()][0];
+    const key2 = [...r2.urlMap.keys()][0];
+    expect(key1).not.toBe(key2);
+  });
+
+  it("indexes placeholders sequentially from 0", () => {
+    const u1 = bigDataUrl("image/png", 11_000);
+    const u2 = bigDataUrl("image/jpeg", 11_000);
+    const html = `<img src="${u1}"><img src="${u2}">`;
+    const { urlMap } = extractOversizedDataUrls(html);
+    const keys = [...urlMap.keys()];
+    expect(keys[0]).toMatch(/_0__$/);
+    expect(keys[1]).toMatch(/_1__$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// restoreDataUrls — substitute placeholders back to original data URLs
+// ---------------------------------------------------------------------------
+describe("restoreDataUrls", () => {
+  it("returns html unchanged when the urlMap is empty", () => {
+    const html = `<p>hi</p>`;
+    expect(restoreDataUrls(html, new Map())).toBe(html);
+  });
+
+  it("substitutes a single placeholder back to its original data URL", () => {
+    const url = bigDataUrl("image/png", 12_000);
+    const html = `<img src="${url}">`;
+    const { html: stripped, urlMap } = extractOversizedDataUrls(html);
+    expect(restoreDataUrls(stripped, urlMap)).toBe(html);
+  });
+
+  it("substitutes multiple placeholders into the html", () => {
+    const u1 = bigDataUrl("image/png", 12_000);
+    const u2 = bigDataUrl("image/jpeg", 15_000);
+    const html = `<meta property="og:image" content="${u1}"><img src="${u2}">`;
+    const { html: stripped, urlMap } = extractOversizedDataUrls(html);
+    expect(restoreDataUrls(stripped, urlMap)).toBe(html);
+  });
+
+  it("round-trip is byte-identical for a realistic full document", () => {
+    const u1 = bigDataUrl("image/png", 12_000);
+    const u2 = bigDataUrl("image/jpeg", 13_000);
+    const html = doc({
+      head: `<title>T</title><meta property="og:image" content="${u1}">`,
+      body: `<p>hello</p><img src="${u2}">`,
+    });
+    const { html: stripped, urlMap } = extractOversizedDataUrls(html);
+    expect(restoreDataUrls(stripped, urlMap)).toBe(html);
+  });
+
+  it("ignores entries whose placeholder no longer appears in the html", () => {
+    const url = bigDataUrl("image/png", 12_000);
+    const html = `<img src="__OVERSIZED_DATA_URL_abcd_0__">`;
+    const urlMap = new Map<string, string>([
+      ["__OVERSIZED_DATA_URL_abcd_0__", url],
+      ["__OVERSIZED_DATA_URL_abcd_999__", "data:image/jpeg;base64,xxx"],
+    ]);
+    const restored = restoreDataUrls(html, urlMap);
+    expect(restored).toBe(`<img src="${url}">`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: strip → sanitize → restore preserves data URLs intact
+// ---------------------------------------------------------------------------
+describe("data URL preprocessing integrates with sanitizeHtml", () => {
+  it("preserves an oversized og:image data URL through the sanitize pipeline", () => {
+    const url = bigDataUrl("image/png", 50_000);
+    const html = doc({
+      head: `<title>Page</title><meta property="og:image" content="${url}">`,
+      body: wordsBody(50),
+    });
+    const { html: prepared, urlMap } = extractOversizedDataUrls(html);
+    const sanitized = sanitize(prepared);
+    const restored = restoreDataUrls(sanitized, urlMap);
+    expect(restored).toContain(`content="${url}"`);
+  });
+
+  it("preserves multiple body <img> data URLs through the sanitize pipeline", () => {
+    const u1 = bigDataUrl("image/png", 30_000);
+    const u2 = bigDataUrl("image/jpeg", 40_000);
+    const html = doc({
+      head: `<title>Page</title>`,
+      body: `${wordsBody(50)}<img src="${u1}" alt="a"><img src="${u2}" alt="b">`,
+    });
+    const { html: prepared, urlMap } = extractOversizedDataUrls(html);
+    const sanitized = sanitize(prepared);
+    const restored = restoreDataUrls(sanitized, urlMap);
+    expect(restored).toContain(u1);
+    expect(restored).toContain(u2);
+  });
+
+  it("dramatically shrinks the payload handed to the parser", () => {
+    const url = bigDataUrl("image/png", 5_000_000);
+    const html = doc({
+      head: `<meta property="og:image" content="${url}">`,
+      body: `<p>x</p>`,
+    });
+    const { html: prepared, urlMap } = extractOversizedDataUrls(html);
+    expect(html.length).toBeGreaterThan(5_000_000);
+    expect(prepared.length).toBeLessThan(1_000);
+    expect(urlMap.size).toBe(1);
   });
 });

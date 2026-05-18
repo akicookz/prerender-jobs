@@ -9,7 +9,12 @@ import { buildKvKey } from "./cache-manager/kv-key-utils";
 import { KvLoader } from "./cache-manager/kv-loader";
 import { R2Loader } from "./cache-manager/r2-loader";
 import { KvRecord } from "./cache-manager/type";
-import { sanitizeHtml, detectMetadataLoss } from "./html-sanitizer";
+import {
+  sanitizeHtml,
+  detectMetadataLoss,
+  extractOversizedDataUrls,
+  restoreDataUrls,
+} from "./html-sanitizer";
 import { loadConfig, type Configuration } from "./load-config";
 import { AppLogger, INDENT } from "./logger";
 import { RenderEngine, type RenderResult } from "./render-engine";
@@ -391,26 +396,39 @@ async function runPipeline({
     return result;
   }
 
+  // Swap any oversized base64 data URLs for short placeholder tokens so they
+  // don't trigger node-html-parser's regex stack overflow. The originals are
+  // restored after sanitization, before the HTML is persisted.
+  const { html: preparedHtml, urlMap: dataUrlMap } = extractOversizedDataUrls(
+    renderResult.html,
+  );
+  if (dataUrlMap.size > 0) {
+    logger.info(
+      `${INDENT}${INDENT}↳ ${path} - stashed ${dataUrlMap.size} oversized data URL(s) before parsing (${renderResult.html.length} → ${preparedHtml.length} bytes)`,
+    );
+  }
+
   // Sanitize rendered HTML: fix metadata, remove noise, inject missing tags
   let sanitizedHtml: string;
   try {
     sanitizedHtml = sanitizeHtml({
-      html: renderResult.html,
+      html: preparedHtml,
       url: renderResult.finalUrl,
       canonicalDomain: config.canonicalDomain,
     });
   } catch (e) {
     logger.error(
-      `${INDENT}${INDENT}↳ ${path} - HTML sanitization failed fallback to original HTML`,
+      `${INDENT}${INDENT}↳ ${path} - HTML sanitization failed fallback to original HTML${dumpPath ? ` (offending HTML saved to ${dumpPath})` : ""}`,
       e,
     );
-    sanitizedHtml = renderResult.html;
+    sanitizedHtml = preparedHtml;
   }
   logger.info(`${INDENT}${INDENT}↳ ${path} - HTML sanitized`);
 
-  // Detect SEO metadata lost during sanitization
+  // Detect SEO metadata lost during sanitization. Both inputs carry the same
+  // placeholders, so property-presence comparisons stay accurate.
   try {
-    const metadataLoss = detectMetadataLoss(renderResult.html, sanitizedHtml);
+    const metadataLoss = detectMetadataLoss(preparedHtml, sanitizedHtml);
     if (metadataLoss.lostProperties.length > 0) {
       logger.warn(
         `${INDENT}${INDENT}↳ ${path} - SEO metadata lost during sanitization: ${metadataLoss.lostProperties.join(", ")}`,
@@ -443,7 +461,7 @@ async function runPipeline({
     }
   } catch (e) {
     logger.error(
-      `${INDENT}${INDENT}↳ ${path} - SEO metadata loss detection failed`,
+      `${INDENT}${INDENT}↳ ${path} - SEO metadata loss detection failed${dumpPath ? ` (offending HTML saved to ${dumpPath})` : ""}`,
       e,
     );
   }
@@ -460,9 +478,15 @@ async function runPipeline({
     result.isAnalyzed = true;
     logger.info(`${INDENT}${INDENT}↳ ${path} - SEO analysis completed`);
   } catch (e) {
-    logger.error(`${INDENT}${INDENT}↳ ${path} - SEO analysis failed`, e);
+    logger.error(
+      `${INDENT}${INDENT}↳ ${path} - SEO analysis failed${dumpPath ? ` (offending HTML saved to ${dumpPath})` : ""}`,
+      e,
+    );
     return result;
   }
+
+  // Restore the stashed data URLs into the final HTML before persistence.
+  const finalSanitizedHtml = restoreDataUrls(sanitizedHtml, dataUrlMap);
 
   // Skip caching if SKIP_CACHE_SYNC is true
   if (config.skipCacheSync) {
@@ -472,7 +496,7 @@ async function runPipeline({
   // Upload snapshot to R2
   const r2Loader = R2Loader.register({
     targetUrl: renderResult.url,
-    html: sanitizedHtml,
+    html: finalSanitizedHtml,
     seoAnalysis: seoAnalysisResult,
     userAgent: config.userAgent,
     r2CacheConfig: {
