@@ -418,7 +418,7 @@ async function runPipeline({
     });
   } catch (e) {
     logger.error(
-      `${INDENT}${INDENT}↳ ${path} - HTML sanitization failed fallback to original HTML${dumpPath ? ` (offending HTML saved to ${dumpPath})` : ""}`,
+      `${INDENT}${INDENT}↳ ${path} - HTML sanitization failed fallback to original HTML`,
       e,
     );
     sanitizedHtml = preparedHtml;
@@ -461,7 +461,7 @@ async function runPipeline({
     }
   } catch (e) {
     logger.error(
-      `${INDENT}${INDENT}↳ ${path} - SEO metadata loss detection failed${dumpPath ? ` (offending HTML saved to ${dumpPath})` : ""}`,
+      `${INDENT}${INDENT}↳ ${path} - SEO metadata loss detection failed`,
       e,
     );
   }
@@ -478,10 +478,7 @@ async function runPipeline({
     result.isAnalyzed = true;
     logger.info(`${INDENT}${INDENT}↳ ${path} - SEO analysis completed`);
   } catch (e) {
-    logger.error(
-      `${INDENT}${INDENT}↳ ${path} - SEO analysis failed${dumpPath ? ` (offending HTML saved to ${dumpPath})` : ""}`,
-      e,
-    );
+    logger.error(`${INDENT}${INDENT}↳ ${path} - SEO analysis failed`, e);
     return result;
   }
 
