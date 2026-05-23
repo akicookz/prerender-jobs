@@ -20,7 +20,7 @@ export class SeoAnalyzer {
     statusCode: number;
     xRobotsTag: string | null;
   }): SeoAnalyzer {
-    if (statusCode >= 300) {
+    if (statusCode >= 400) {
       throw new Error(`Status code is not 200~299, got ${statusCode}`);
     }
     if (!url) {
@@ -71,11 +71,16 @@ export class SeoAnalyzer {
       wordCount,
     });
 
+    let finalStatusCode = 200;
+    if (isSoft404) {
+      finalStatusCode = 404;
+    }
+
     // -------------------------------------------------------------------------
     // Build result
     // -------------------------------------------------------------------------
     return {
-      statusCode: this._statusCode,
+      statusCode: finalStatusCode,
       indexable,
       isSoft404,
 
