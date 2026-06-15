@@ -7,6 +7,20 @@ const DEFAULT_RENDER_TIMEOUT = 55_000; // 55 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 const MAX_NAVIGATIONS = 10;
 const MAX_RENDER_ATTEMPTS = 2;
+// Cap diagnostics lists so a pathological page (e.g. an ad script erroring in a
+// loop) can't grow them unbounded.
+const DIAG_MAX_ENTRIES = 50;
+
+export type RenderDiagnostics = {
+  // What ended the readiness wait: app_signaled, network_and_dom_stable,
+  // hard_timeout, etc. (see waitForPageReady).
+  readyReason: string;
+  // Wall-clock from render start to snapshot, in ms.
+  durationMs: number;
+  failedRequests: { url: string; error: string }[];
+  consoleErrors: string[];
+  pageErrors: string[];
+};
 
 export interface RenderResult {
   url: string;
@@ -14,6 +28,57 @@ export interface RenderResult {
   statusCode: number;
   xRobotsTag?: string | null;
   finalUrl: string;
+  diagnostics?: RenderDiagnostics;
+}
+
+// Diagnostics collected over a single render attempt, stored in R2 metadata for
+// debugging snapshots from the dashboard.
+type DiagnosticsCollector = {
+  startedAt: number;
+  failedRequests: { url: string; error: string }[];
+  consoleErrors: string[];
+  pageErrors: string[];
+};
+
+// R2 caps total object metadata at 8192 bytes, and values must be strings.
+// Keep the diagnostics blobs well under that (worst case here is ~3KB across
+// the three lists, leaving headroom for the url/userAgent/seo* keys). Counts
+// are stored separately so a trimmed list stays distinguishable from a
+// complete one.
+export function renderDiagnosticsToMetadata(
+  d: RenderDiagnostics,
+): Record<string, string> {
+  const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
+  const fitJsonArray = (items: unknown[], maxBytes: number): string => {
+    const out: unknown[] = [];
+    for (const item of items) {
+      if (JSON.stringify([...out, item]).length > maxBytes) break;
+      out.push(item);
+    }
+    return JSON.stringify(out);
+  };
+  return {
+    renderReadyReason: d.readyReason,
+    renderDurationMs: String(d.durationMs),
+    renderFailedRequestCount: String(d.failedRequests.length),
+    renderFailedRequests: fitJsonArray(
+      d.failedRequests.map((r) => ({
+        url: trunc(r.url, 150),
+        error: trunc(r.error, 60),
+      })),
+      1200,
+    ),
+    renderConsoleErrorCount: String(d.consoleErrors.length),
+    renderConsoleErrors: fitJsonArray(
+      d.consoleErrors.map((s) => trunc(s, 200)),
+      1000,
+    ),
+    renderPageErrorCount: String(d.pageErrors.length),
+    renderPageErrors: fitJsonArray(
+      d.pageErrors.map((s) => trunc(s, 200)),
+      800,
+    ),
+  };
 }
 
 type ReadinessState = {
@@ -54,11 +119,17 @@ export class RenderEngine {
       const context = await this._browser.createBrowserContext();
       const page = await context.newPage();
 
-      this.attachDebugListeners(page);
+      const diagnostics: DiagnosticsCollector = {
+        startedAt: Date.now(),
+        failedRequests: [],
+        consoleErrors: [],
+        pageErrors: [],
+      };
+      this.attachDebugListeners(page, diagnostics);
 
       try {
         return await Promise.race([
-          this.renderPageInternal(page),
+          this.renderPageInternal(page, diagnostics),
           new Promise<never>((_, reject) =>
             setTimeout(
               () =>
@@ -102,7 +173,10 @@ export class RenderEngine {
       : new Error(`Failed to render page ${this._url}`);
   }
 
-  private attachDebugListeners(page: Page): void {
+  private attachDebugListeners(
+    page: Page,
+    diagnostics: DiagnosticsCollector,
+  ): void {
     // Set up page event listeners for debugging (filtered to reduce noise)
     try {
       page.on("console", (msg: ConsoleMessage) => {
@@ -115,6 +189,9 @@ export class RenderEngine {
             this._logger.debug(
               `[PageConsole] ${msg.type()}: ${text} : ${this._url}`,
             );
+            if (diagnostics.consoleErrors.length < DIAG_MAX_ENTRIES) {
+              diagnostics.consoleErrors.push(text);
+            }
           }
         } catch {
           // ignore
@@ -134,7 +211,11 @@ export class RenderEngine {
       page.on("pageerror", (err: unknown) => {
         if (err instanceof Error) {
           try {
-            this._logger.debug(`[PageError] ${err?.message || err}`);
+            const message = err?.message || String(err);
+            this._logger.debug(`[PageError] ${message}`);
+            if (diagnostics.pageErrors.length < DIAG_MAX_ENTRIES) {
+              diagnostics.pageErrors.push(message);
+            }
           } catch {
             // ignore
           }
@@ -156,6 +237,12 @@ export class RenderEngine {
             return;
           }
           this._logger.debug("[RequestFailed]", req.url(), errorText);
+          if (diagnostics.failedRequests.length < DIAG_MAX_ENTRIES) {
+            diagnostics.failedRequests.push({
+              url: req.url(),
+              error: errorText,
+            });
+          }
         } catch {
           // ignore
         }
@@ -179,7 +266,10 @@ export class RenderEngine {
     );
   }
 
-  private async renderPageInternal(page: Page): Promise<RenderResult> {
+  private async renderPageInternal(
+    page: Page,
+    diagnostics: DiagnosticsCollector,
+  ): Promise<RenderResult> {
     const tracer = RenderTracer.enabled()
       ? RenderTracer.register({ url: this._url, page, logger: this._logger })
       : null;
@@ -188,7 +278,7 @@ export class RenderEngine {
     }
 
     try {
-      return await this.renderPageInternalTraced(page, tracer);
+      return await this.renderPageInternalTraced(page, tracer, diagnostics);
     } finally {
       if (tracer) {
         await tracer.stop().catch(() => void 0);
@@ -199,6 +289,7 @@ export class RenderEngine {
   private async renderPageInternalTraced(
     page: Page,
     tracer: RenderTracer | null,
+    diagnostics: DiagnosticsCollector,
   ): Promise<RenderResult> {
     await page.setViewport({ width: 1280, height: 720 });
     await page.setUserAgent({ userAgent: this._userAgent });
@@ -304,7 +395,11 @@ export class RenderEngine {
       `[Prerender] Navigation completed in ${navEndTimestamp - navStartTimestamp}ms for ${this._url}`,
     );
 
-    await this.waitForPageReady({ page, firstPartyReqPending });
+    const readyReason = await this.waitForPageReady({
+      page,
+      firstPartyReqPending,
+    });
+    this._logger.debug(`[Prerender] Snapshot triggered by: ${readyReason}`);
     if (!response) {
       throw new Error(`Failed to navigate to ${this._url}`);
     }
@@ -343,6 +438,13 @@ export class RenderEngine {
       statusCode,
       xRobotsTag,
       finalUrl,
+      diagnostics: {
+        readyReason,
+        durationMs: Date.now() - diagnostics.startedAt,
+        failedRequests: diagnostics.failedRequests,
+        consoleErrors: diagnostics.consoleErrors,
+        pageErrors: diagnostics.pageErrors,
+      },
     };
   }
 
@@ -651,17 +753,15 @@ export class RenderEngine {
         // ── Check underlying signals ──
         let signalReady = signalReason !== null;
 
-        if (!signalReady) {
-          // App signaled ready via prerenderReady/htmlSnapshot
-          if (await this.checkAppSignal({ page })) {
-            state.appSignaled = true;
-            signalReady = true;
-            signalReason = "app_signaled";
-            signalFiredAt = now;
-            this._logger.debug(
-              "[Prerender] App signaled ready via prerenderReady/htmlSnapshot",
-            );
-          }
+        // Record the app's readiness signal, but don't trust it on its own.
+        // The app can set prerenderReady before its own data fetch resolves
+        // (the skeleton race), so we still wait for first-party requests to go
+        // quiet below before treating the signal as ready.
+        if (!state.appSignaled && (await this.checkAppSignal({ page }))) {
+          state.appSignaled = true;
+          this._logger.debug(
+            "[Prerender] App signaled ready via prerenderReady/htmlSnapshot",
+          );
         }
 
         if (!signalReady) {
@@ -688,7 +788,17 @@ export class RenderEngine {
           const networkStable = networkIdleDuration >= NETWORK_QUIET_MS;
           const domStable = state.domStableSince !== null;
 
-          if (networkStable && domStable) {
+          // Trust the app signal only once first-party requests have gone
+          // quiet — by then React has painted the content. DOM stability isn't
+          // required here because the app has explicitly declared readiness.
+          if (state.appSignaled && networkStable) {
+            signalReady = true;
+            signalReason = "app_signaled";
+            signalFiredAt = now;
+            this._logger.debug(
+              `[Prerender] App signaled and network idle for ${networkIdleDuration}ms`,
+            );
+          } else if (networkStable && domStable) {
             signalReady = true;
             signalReason = `network_and_dom_stable (network idle ${networkIdleDuration}ms, DOM stable ${domIdleTime}ms)`;
             signalFiredAt = now;

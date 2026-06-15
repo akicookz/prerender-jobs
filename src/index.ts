@@ -496,6 +496,7 @@ async function runPipeline({
     html: finalSanitizedHtml,
     seoAnalysis: seoAnalysisResult,
     userAgent: config.userAgent,
+    diagnostics: renderResult.diagnostics,
     r2CacheConfig: {
       cfAccountId: config.cfAccountId,
       r2AccessKeyId: config.r2AccessKeyId,

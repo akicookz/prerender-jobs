@@ -2,12 +2,17 @@ import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { AppLogger } from "../logger";
 import { CACHE_VERSION, KvRecord } from "./type";
 import { PageSeoAnalysis } from "../seo-analyzer/type";
+import {
+  renderDiagnosticsToMetadata,
+  type RenderDiagnostics,
+} from "../render-engine";
 
 export class R2Loader {
   private readonly _targetUrl: string;
   private readonly _html: string;
   private readonly _seoAnalysis: PageSeoAnalysis;
   private readonly _userAgent: string;
+  private readonly _diagnostics: RenderDiagnostics | undefined;
   private readonly _logger: AppLogger;
   private readonly _r2CacheConfig: {
     cfAccountId: string;
@@ -22,12 +27,14 @@ export class R2Loader {
     html,
     seoAnalysis,
     userAgent,
+    diagnostics,
     r2CacheConfig,
   }: {
     targetUrl: string;
     html: string;
     seoAnalysis: PageSeoAnalysis;
     userAgent: string;
+    diagnostics?: RenderDiagnostics;
     r2CacheConfig: {
       cfAccountId: string;
       r2AccessKeyId: string;
@@ -36,7 +43,14 @@ export class R2Loader {
       cacheTtl: number;
     };
   }): R2Loader {
-    return new R2Loader(targetUrl, html, seoAnalysis, userAgent, r2CacheConfig);
+    return new R2Loader(
+      targetUrl,
+      html,
+      seoAnalysis,
+      userAgent,
+      diagnostics,
+      r2CacheConfig,
+    );
   }
 
   private constructor(
@@ -44,6 +58,7 @@ export class R2Loader {
     html: string,
     seoAnalysis: PageSeoAnalysis,
     userAgent: string,
+    diagnostics: RenderDiagnostics | undefined,
     r2CacheConfig: {
       cfAccountId: string;
       r2AccessKeyId: string;
@@ -56,6 +71,7 @@ export class R2Loader {
     this._html = html;
     this._seoAnalysis = seoAnalysis;
     this._userAgent = userAgent;
+    this._diagnostics = diagnostics;
     this._r2CacheConfig = r2CacheConfig;
     this._logger = AppLogger.register({
       prefix: `r2-loader`,
@@ -194,6 +210,11 @@ export class R2Loader {
       seoCanonicalMismatch: String(
         this._seoAnalysis.canonicalMismatch || false,
       ),
+      // Render-time diagnostics (ready reason, failed requests, console
+      // errors, timing) for debugging snapshots from the dashboard.
+      ...(this._diagnostics
+        ? renderDiagnosticsToMetadata(this._diagnostics)
+        : {}),
     };
   }
 
