@@ -52,16 +52,29 @@ export function renderDiagnosticsToMetadata(
   d: RenderDiagnostics,
 ): Record<string, string> {
   const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
+  // R2 metadata is sent as HTTP headers, whose values must be Latin-1 printable
+  // ASCII. Console/page-error text often carries emoji, curly quotes, CJK, etc.
+  // JSON.stringify escapes control chars but leaves those raw, which trips
+  // Node's ERR_INVALID_CHAR. Escaping every non-ASCII code unit to \uXXXX keeps
+  // the string valid JSON while making it header-safe.
+  const headerSafe = (s: string): string =>
+    s.replace(
+      /[^\x20-\x7E]/g,
+      (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    );
   const fitJsonArray = (items: unknown[], maxBytes: number): string => {
     const out: unknown[] = [];
+    // Measure the header-safe (escaped) form so the byte budget reflects what
+    // actually lands in the metadata header — escaping can grow a string up to
+    // 6x, so budgeting on the raw JSON could overshoot R2's 8KB cap.
     for (const item of items) {
-      if (JSON.stringify([...out, item]).length > maxBytes) break;
+      if (headerSafe(JSON.stringify([...out, item])).length > maxBytes) break;
       out.push(item);
     }
-    return JSON.stringify(out);
+    return headerSafe(JSON.stringify(out));
   };
   return {
-    renderReadyReason: d.readyReason,
+    renderReadyReason: headerSafe(d.readyReason),
     renderDurationMs: String(d.durationMs),
     renderFailedRequestCount: String(d.failedRequests.length),
     renderFailedRequests: fitJsonArray(
