@@ -18,6 +18,9 @@ export type RenderDiagnostics = {
   // Wall-clock from render start to snapshot, in ms.
   durationMs: number;
   failedRequests: { url: string; error: string }[];
+  // First-party requests still in flight when the snapshot was taken — useful
+  // for diagnosing hard_timeout / dom_timeout snapshots (what was hanging).
+  pendingRequests: string[];
   consoleErrors: string[];
   pageErrors: string[];
 };
@@ -67,6 +70,11 @@ export function renderDiagnosticsToMetadata(
         error: trunc(r.error, 60),
       })),
       1200,
+    ),
+    renderPendingRequestCount: String(d.pendingRequests.length),
+    renderPendingRequests: fitJsonArray(
+      d.pendingRequests.map((u) => trunc(u, 150)),
+      800,
     ),
     renderConsoleErrorCount: String(d.consoleErrors.length),
     renderConsoleErrors: fitJsonArray(
@@ -442,6 +450,7 @@ export class RenderEngine {
         readyReason,
         durationMs: Date.now() - diagnostics.startedAt,
         failedRequests: diagnostics.failedRequests,
+        pendingRequests: Array.from(firstPartyReqPending, (req) => req.url()),
         consoleErrors: diagnostics.consoleErrors,
         pageErrors: diagnostics.pageErrors,
       },
