@@ -1,10 +1,20 @@
-import Cloudflare from "cloudflare";
 import { AppLogger } from "../logger";
+
+const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 
 interface KvConfig {
   cfAccountId: string;
   cfApiToken: string;
   kvNamespaceId: string;
+}
+
+interface KvBulkUpdateResponse {
+  success: boolean;
+  errors: { code: number; message: string }[];
+  result: {
+    successful_key_count?: number;
+    unsuccessful_keys?: string[];
+  } | null;
 }
 
 export class KvLoader {
@@ -20,12 +30,6 @@ export class KvLoader {
     this._logger = AppLogger.register({ prefix: "kv-loader" });
   }
 
-  private get cfClient(): Cloudflare {
-    return new Cloudflare({
-      apiToken: this._kvConfig.cfApiToken,
-    });
-  }
-
   async uploadKvRecords({
     kvPairs,
   }: {
@@ -35,24 +39,37 @@ export class KvLoader {
     unsuccessfulKeys: string[];
   }> {
     this._logger.info(`Uploading ${kvPairs.length} KV records to namespace`);
+    const bulkUpdateUrl = `${CLOUDFLARE_API_BASE}/accounts/${this._kvConfig.cfAccountId}/storage/kv/namespaces/${this._kvConfig.kvNamespaceId}/bulk`;
     try {
-      const result = await this.cfClient.kv.namespaces.bulkUpdate(
-        this._kvConfig.kvNamespaceId,
-        {
-          account_id: this._kvConfig.cfAccountId,
-          body: kvPairs,
+      const res = await fetch(bulkUpdateUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${this._kvConfig.cfApiToken}`,
+          "Content-Type": "application/json",
         },
-      );
-      if (result === null) {
-        this._logger.error(`KV bulkUpdate returned null — treating all ${kvPairs.length} keys as unsuccessful`);
+        body: JSON.stringify(kvPairs),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        throw new Error(
+          `KV bulk update returned ${res.status} ${res.statusText}: ${errBody}`,
+        );
+      }
+      const json = (await res.json()) as KvBulkUpdateResponse;
+      if (!json.success || json.result === null) {
+        this._logger.error(
+          `KV bulkUpdate unsuccessful — treating all ${kvPairs.length} keys as unsuccessful`,
+          json.errors,
+        );
         return {
           successfulKeyCount: 0,
           unsuccessfulKeys: kvPairs.map((pair) => pair.key),
         };
       }
       return {
-        successfulKeyCount: result.successful_key_count ?? 0,
-        unsuccessfulKeys: result.unsuccessful_keys ?? [],
+        successfulKeyCount: json.result.successful_key_count ?? 0,
+        unsuccessfulKeys: json.result.unsuccessful_keys ?? [],
       };
     } catch (e) {
       this._logger.error(`Failed to upload KV records — treating all ${kvPairs.length} keys as unsuccessful`, e);

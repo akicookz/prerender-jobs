@@ -1,7 +1,14 @@
 import { DeleteObjectsCommand, S3Client } from "@aws-sdk/client-s3";
-import Cloudflare from "cloudflare";
 import { AppLogger, INDENT } from "../logger";
 import { KvRecord } from "./type";
+
+const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
+
+interface KvBulkGetResponse {
+  success: boolean;
+  errors: { code: number; message: string }[];
+  result: { values: { [key: string]: unknown } } | null;
+}
 
 interface CacheInvalidatorConfig {
   cfAccountId: string;
@@ -28,12 +35,6 @@ export class CacheInvalidator {
     this._cacheConfig = cacheConfig;
     this._logger = AppLogger.register({ prefix: "cache-invalidator" });
   }
-  private get cfClient(): Cloudflare {
-    return new Cloudflare({
-      apiToken: this._cacheConfig.cfApiToken,
-    });
-  }
-
   private get r2Client(): S3Client {
     return new S3Client({
       region: "auto",
@@ -65,22 +66,31 @@ export class CacheInvalidator {
         `Processing batch ${i / batchSize + 1} of ${numberOfBatches}`,
       );
       const batchKvKeys = kvKeys.slice(i, i + batchSize);
+      const bulkGetUrl = `${CLOUDFLARE_API_BASE}/accounts/${cfAccountId}/storage/kv/namespaces/${kvNamespaceId}/bulk/get`;
       let kvValues: { [key: string]: unknown } = {};
       try {
-        const bulkGetResult = await this.cfClient.kv.namespaces.bulkGet(
-          kvNamespaceId,
-          {
-            account_id: cfAccountId,
-            keys: batchKvKeys,
+        const res = await fetch(bulkGetUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this._cacheConfig.cfApiToken}`,
+            "Content-Type": "application/json",
           },
-        );
-        if (!bulkGetResult || !bulkGetResult.values) {
-          this._logger.error(
-            `${INDENT}↳ Batch ${batchNumber} - Failed to get KV records`,
+          body: JSON.stringify({ keys: batchKvKeys, type: "text" }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          throw new Error(
+            `KV bulk get returned ${res.status} ${res.statusText}: ${errBody}`,
           );
-          continue;
         }
-        kvValues = bulkGetResult.values;
+        const json = (await res.json()) as KvBulkGetResponse;
+        if (!json.success || !json.result) {
+          throw new Error(
+            `KV bulk get unsuccessful: ${JSON.stringify(json.errors)}`,
+          );
+        }
+        kvValues = json.result.values;
       } catch (e) {
         this._logger.error(
           `${INDENT}↳ Batch ${batchNumber} - Failed to get KV records for invalidation`,
