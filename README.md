@@ -89,11 +89,13 @@ All deploy scripts default to job name `prerender-jobs` in region `us-east1`. Ov
 # Default job, unchanged:
 pnpm update-job && pnpm deploy:job && pnpm exec:cloud   # prerender-jobs / us-east1
 
-# Enterprise job in us-central1:
-JOB_NAME=prerender-jobs-enterprise REGION=us-central1 pnpm update-job   # creates the job
-JOB_NAME=prerender-jobs-enterprise REGION=us-central1 pnpm deploy:job   # builds + points image at it
-JOB_NAME=prerender-jobs-enterprise REGION=us-central1 pnpm exec:cloud   # runs it
+# Enterprise job (prerender-jobs-enterprise / us-central1), via dedicated scripts:
+pnpm update-job:enterprise   # creates the job
+pnpm deploy:job:enterprise   # builds + points image at it
+pnpm exec:cloud:enterprise   # runs it
 ```
+
+The `:enterprise` scripts just set `JOB_NAME` / `REGION` for you; you can still target any job/region ad hoc by setting those env vars on the base scripts.
 
 ### 1. Set up production environment variables
 

@@ -12,7 +12,10 @@
     "deploy:job": "bash deploy.sh",
     "update-job": "bash update-cloudrun-job.sh",
     "exec:local": "bash execute-on-local.sh",
-    "exec:cloud": "bash execute-on-cloud.sh"
+    "exec:cloud": "bash execute-on-cloud.sh",
+    "deploy:job:enterprise": "JOB_NAME=prerender-jobs-enterprise REGION=us-central1 bash deploy.sh",
+    "update-job:enterprise": "JOB_NAME=prerender-jobs-enterprise REGION=us-central1 bash update-cloudrun-job.sh",
+    "exec:cloud:enterprise": "JOB_NAME=prerender-jobs-enterprise REGION=us-central1 bash execute-on-cloud.sh"
   },
   "keywords": [],
   "author": "",
