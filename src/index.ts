@@ -4,7 +4,6 @@ import { DateTime } from "luxon";
 import * as TelegramBot from "node-telegram-bot-api";
 import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
-import { CacheInvalidator } from "./cache-manager/cache-invalidator";
 import { buildKvKey } from "./cache-manager/kv-key-utils";
 import { KvLoader } from "./cache-manager/kv-loader";
 import { R2Loader } from "./cache-manager/r2-loader";
@@ -839,19 +838,19 @@ async function main(): Promise<void> {
     });
 
     // STEP 4 : Invalidate stale R2 objects
-    const cacheInvalidator = CacheInvalidator.register({
-      cacheConfig: {
-        cfAccountId: config.cfAccountId,
-        cfApiToken: config.cfApiToken,
-        r2AccessKeyId: config.r2AccessKeyId,
-        r2SecretAccessKey: config.r2SecretAccessKey,
-        r2BucketName: config.r2BucketName,
-        kvNamespaceId: config.kvNamespaceId,
-      },
-    });
-    await cacheInvalidator.invalidateMultipleStaleR2Objects({
-      kvKeyObjectKeyMap: objectKeyMap,
-    });
+    // const cacheInvalidator = CacheInvalidator.register({
+    //   cacheConfig: {
+    //     cfAccountId: config.cfAccountId,
+    //     cfApiToken: config.cfApiToken,
+    //     r2AccessKeyId: config.r2AccessKeyId,
+    //     r2SecretAccessKey: config.r2SecretAccessKey,
+    //     r2BucketName: config.r2BucketName,
+    //     kvNamespaceId: config.kvNamespaceId,
+    //   },
+    // });
+    // await cacheInvalidator.invalidateMultipleStaleR2Objects({
+    //   kvKeyObjectKeyMap: objectKeyMap,
+    // });
 
     // STEP 5 : Upload KV records (URL meta)
     const { succeededUrls, unsuccessfulUrls } = await bulkUpdateKv({
