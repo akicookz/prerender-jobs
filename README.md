@@ -81,7 +81,15 @@ This builds the image and runs it with `.env.local` injected as environment vari
 
 ## Deployment (Google Cloud Run Job)
 
-The job runs on Google Cloud Run. The Cloud Run Job is defined in `cloudrun-job.yaml` (2 vCPU, 2 GiB memory, `us-east1`, 20-minute timeout, project `seotools01`).
+The job runs on Google Cloud Run. The Cloud Run Job is defined in `cloudrun-job.yaml` (2 vCPU, 2 GiB memory, 20-minute timeout, project `seotools01`).
+
+All deploy scripts target `us-east1` by default. To target another region, prefix any of them with the `REGION` env var, e.g. `REGION=us-west1`. A Cloud Run Job name is scoped per-region, so the same `prerender-jobs` job can run independently in multiple regions at once (the `gcr.io` image is global and shared). To stand up a **new** region for the first time, run the steps in this order — the job must exist before `deploy.sh`'s image update can target it:
+
+```bash
+REGION=us-west1 pnpm update-job   # creates the job spec in the new region
+REGION=us-west1 pnpm deploy:job    # builds + points the image at it
+REGION=us-west1 pnpm exec:cloud    # runs it
+```
 
 ### 1. Set up production environment variables
 

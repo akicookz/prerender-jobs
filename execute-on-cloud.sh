@@ -3,7 +3,7 @@
 set -e
 
 JOB_NAME="prerender-jobs"
-REGION="us-east1"
+REGION="${REGION:-us-east1}"
 PROJECT="seotools01"
 
 # Read ../.env.production and prepare env overload

@@ -3,7 +3,7 @@ kind: Job
 metadata:
   name: prerender-jobs
   labels:
-    cloud.googleapis.com/location: us-east1
+    cloud.googleapis.com/location: ${REGION}
 spec:
   template:
     spec:

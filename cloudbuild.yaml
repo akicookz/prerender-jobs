@@ -20,6 +20,9 @@ steps:
         "update",
         "prerender-jobs",
         "--image=gcr.io/$PROJECT_ID/prerender-jobs:latest",
-        "--region=us-east1",
+        "--region=${_REGION}",
         "--project=$PROJECT_ID",
       ]
+
+substitutions:
+  _REGION: us-east1
