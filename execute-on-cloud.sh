@@ -2,7 +2,7 @@
 
 set -e
 
-JOB_NAME="prerender-jobs"
+JOB_NAME="${JOB_NAME:-prerender-jobs}"
 REGION="${REGION:-us-east1}"
 PROJECT="seotools01"
 

@@ -1,7 +1,7 @@
 apiVersion: run.googleapis.com/v1
 kind: Job
 metadata:
-  name: prerender-jobs
+  name: ${JOB_NAME}
   labels:
     cloud.googleapis.com/location: ${REGION}
 spec:
