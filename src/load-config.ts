@@ -42,6 +42,7 @@ enum ConfigEnvVariables {
   REQUEST_SOURCE = "REQUEST_SOURCE",
   CANONICAL_DOMAIN = "CANONICAL_DOMAIN",
   PRODUCT_TYPE = "PRODUCT_TYPE",
+  ENCITED_INTERNAL_KEY = "ENCITED_INTERNAL_KEY",
 }
 
 export interface PathEntry {
@@ -98,6 +99,9 @@ export interface Configuration {
   retryOptions?: string;
   // Product type
   productType: string;
+  // Shared secret sent as X-Encited-Internal-Key on first-party requests so
+  // the Fly proxy exempts them from per-IP rate limiting
+  internalKey?: string;
 }
 
 export function loadConfig(): Configuration {
@@ -253,6 +257,9 @@ export function loadConfig(): Configuration {
   const productType =
     process.env[ConfigEnvVariables.PRODUCT_TYPE] || "standard";
 
+  const internalKey =
+    process.env[ConfigEnvVariables.ENCITED_INTERNAL_KEY] || undefined;
+
   return {
     batchId,
     userId,
@@ -280,5 +287,6 @@ export function loadConfig(): Configuration {
     telegramChatId,
     retryOptions,
     productType,
+    internalKey,
   };
 }

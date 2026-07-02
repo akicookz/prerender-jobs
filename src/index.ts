@@ -383,6 +383,11 @@ async function runPipeline({
     targetUrl: urlToRender,
     browser,
     userAgent: config.userAgent,
+    internalKey: config.internalKey,
+    // Renders target the origin host directly, but the page's own absolute
+    // URLs hit the customer domain (behind the rate-limiting Fly proxy) —
+    // those requests need the key too.
+    internalKeyHosts: [config.domain, config.canonicalDomain],
   });
 
   let renderResult: RenderResult;

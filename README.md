@@ -61,6 +61,7 @@ cp .env.sample .env.local
 | `CONCURRENCY`            | no       | `1`                      | Number of pages to render in parallel                                                                                           |
 | `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2 and KV                                                                                   |
 | `SKIP_SITEMAP_PARSING`   | no       | `false`                  | Set to `true` to skip sitemap discovery and only render URLs in `URL_LIST`                                                      |
+| `ENCITED_INTERNAL_KEY`   | no       | —                        | Sent as `X-Encited-Internal-Key` on first-party requests so the Fly proxy exempts them from per-IP rate limiting                |
 | `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                                                                               |
 | `WEBHOOK_SIGNATURE`      | no       | —                        | Secret sent as `x-webhook-signature` header with every webhook request                                                          |
 | `TELEGRAM_BOT_TOKEN`     | no       | built-in default         | Telegram bot token for result/failure notifications; uses a shared default if omitted                                           |

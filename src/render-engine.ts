@@ -5,6 +5,10 @@ import { RenderTracer } from "./render-tracer";
 
 const DEFAULT_RENDER_TIMEOUT = 65_000; // 65 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
+// Shared secret the Fly proxy accepts to exempt first-party renders from
+// per-IP rate limiting (lovablehtml/caddy-proxy/Caddyfile). Sent only to the
+// render target and the customer's own hostnames, never to third parties.
+const ENCITED_INTERNAL_KEY_HEADER = "x-encited-internal-key";
 const MAX_NAVIGATIONS = 10;
 const MAX_RENDER_ATTEMPTS = 2;
 // Cap diagnostics lists so a pathological page (e.g. an ad script erroring in a
@@ -112,24 +116,52 @@ export class RenderEngine {
   private readonly _url: string;
   private readonly _browser: Browser;
   private readonly _userAgent: string;
+  private readonly _internalKey: string | null;
+  private readonly _internalKeyHosts: Set<string>;
   private readonly _logger: AppLogger;
 
   static register({
     targetUrl,
     browser,
     userAgent,
+    internalKey,
+    internalKeyHosts,
   }: {
     targetUrl: string;
     browser: Browser;
     userAgent: string;
+    internalKey?: string;
+    internalKeyHosts?: string[];
   }) {
-    return new RenderEngine(targetUrl, browser, userAgent);
+    return new RenderEngine(
+      targetUrl,
+      browser,
+      userAgent,
+      internalKey ?? null,
+      internalKeyHosts ?? [],
+    );
   }
 
-  private constructor(targetUrl: string, browser: Browser, userAgent: string) {
+  private constructor(
+    targetUrl: string,
+    browser: Browser,
+    userAgent: string,
+    internalKey: string | null,
+    internalKeyHosts: string[],
+  ) {
     this._url = targetUrl;
     this._browser = browser;
     this._userAgent = userAgent.trim();
+    this._internalKey = internalKey;
+    // Cover both apex and www forms so requests to either routing hostname
+    // carry the key.
+    this._internalKeyHosts = new Set(
+      internalKeyHosts
+        .map((h) => h.toLowerCase())
+        .flatMap((h) =>
+          h.startsWith("www.") ? [h, h.slice(4)] : [h, `www.${h}`],
+        ),
+    );
     this._logger = AppLogger.register({ prefix: "render-engine" });
   }
 
@@ -360,6 +392,12 @@ export class RenderEngine {
       const headers = req.headers();
       if (reqHost === targetHost) {
         headers[INTERNAL_PRERENDER_HEADER] = "1";
+      }
+      if (
+        this._internalKey &&
+        (reqHost === targetHost || this._internalKeyHosts.has(reqHost))
+      ) {
+        headers[ENCITED_INTERNAL_KEY_HEADER] = this._internalKey;
       }
       req.continue({ headers }).catch(() => {
         // If continue fails (e.g. request already handled), ignore
