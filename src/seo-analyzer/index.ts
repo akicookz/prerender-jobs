@@ -69,6 +69,7 @@ export class SeoAnalyzer {
       title: metaTags.title,
       bodyText,
       wordCount,
+      h1Count: h1Tags.length,
     });
 
     let finalStatusCode = 200;

@@ -170,6 +170,24 @@ describe("R1: noindex removal", () => {
     const result = sanitize(html);
     expect(result).toContain("noindex");
   });
+
+  it("strips noindex on a thin page that still has a title and an H1 (login/signup form)", () => {
+    const html = doc({
+      head: `<title>Log in</title><meta name="robots" content="noindex">`,
+      body: `<h1>Welcome back</h1><p>Enter your email and password</p>`,
+    });
+    const result = sanitize(html);
+    expect(result).not.toContain("noindex");
+  });
+
+  it("preserves noindex on an empty body even when title and H1 rules would pass", () => {
+    const html = doc({
+      head: `<title>My Page</title><meta name="robots" content="noindex">`,
+      body: "",
+    });
+    const result = sanitize(html);
+    expect(result).toContain("noindex");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -305,8 +305,28 @@ describe("analyze() – soft 404 detection", () => {
     expect(result.isSoft404).toBe(true);
   });
 
-  it("detects soft 404 for extremely thin content (< 20 words)", () => {
+  it("detects soft 404 for extremely thin content (< 20 words) lacking title and H1", () => {
     const result = analyze({ body: wordsBody(15) });
+    expect(result.isSoft404).toBe(true);
+  });
+
+  it("does not flag a thin page that has both a title and an H1 (login/signup form)", () => {
+    const result = analyze({
+      title: "Log in",
+      h1s: ["Welcome back"],
+      body: wordsBody(10),
+    });
+    expect(result.isSoft404).toBe(false);
+    expect(result.statusCode).toBe(200);
+  });
+
+  it("detects soft 404 for a thin page with a title but no H1", () => {
+    const result = analyze({ title: "Some Page", body: wordsBody(10) });
+    expect(result.isSoft404).toBe(true);
+  });
+
+  it("detects soft 404 for an empty body even when a title exists", () => {
+    const result = analyze({ title: "My Page", body: "" });
     expect(result.isSoft404).toBe(true);
   });
 

@@ -65,11 +65,13 @@ export function sanitizeHtml({
   const titleText = titleEl?.textContent ?? undefined;
   const bodyText = extractBodyText(root);
   const wordCount = countWords(bodyText);
+  const h1Count = root.querySelectorAll("h1").length;
 
   const isSoft404 = detectSoft404({
     title: titleText,
     bodyText,
     wordCount,
+    h1Count,
   });
 
   let canonicalUrl: string | null = null;

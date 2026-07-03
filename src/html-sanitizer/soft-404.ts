@@ -22,16 +22,19 @@ const SOFT_404_TITLE_PATTERNS = [
  * Heuristics:
  * 1. Title matches common 404 patterns (e.g. "Page Not Found", "Error 404")
  * 2. Very short content (<50 words) with 404-like text in the body
- * 3. Extremely thin content (<20 words)
+ * 3. Empty body (failed render)
+ * 4. Extremely thin content (<20 words) that also lacks a title or H1
  */
 export function detectSoft404({
   title,
   bodyText,
   wordCount,
+  h1Count,
 }: {
   title: string | undefined;
   bodyText: string;
   wordCount: number;
+  h1Count: number;
 }): boolean {
   // Check title for 404-like patterns
   if (title) {
@@ -51,8 +54,15 @@ export function detectSoft404({
     }
   }
 
-  // Extremely thin content might indicate soft 404
-  if (wordCount < 20) {
+  // A completely empty body is a failed render regardless of head tags.
+  if (wordCount === 0) {
+    return true;
+  }
+
+  // Extremely thin content only counts as a soft 404 when the page also
+  // lacks basic structure. Real-but-minimal pages (login/signup forms) have
+  // a title and an H1 and must not be served to crawlers as 404s.
+  if (wordCount < 20 && (!title?.trim() || h1Count === 0)) {
     return true;
   }
 
