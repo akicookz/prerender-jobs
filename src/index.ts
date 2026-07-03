@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import * as TelegramBot from "node-telegram-bot-api";
 import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
-import { buildKvKey } from "./cache-manager/kv-key-utils";
+import { buildKvKey, stripTrackingParams } from "./cache-manager/kv-key-utils";
 import { KvLoader } from "./cache-manager/kv-loader";
 import { R2Loader } from "./cache-manager/r2-loader";
 import { KvRecord } from "./cache-manager/type";
@@ -101,8 +101,12 @@ async function prepareTargetUrls({
     lastmodFilter: config.sitemapUpdatedWithin,
   });
   const urlsFromSitemap = await sitemapParser.parseSitemap();
+  // Strip tracking params (?utm_*, click IDs) so URL variants collapse into
+  // one render and one cache entry instead of each minting their own.
   const urlsToRender = uniq(
-    [...urlsFromPaths, ...urlsFromSitemap].map((url) => normalizeUrl(url)),
+    [...urlsFromPaths, ...urlsFromSitemap].map((url) =>
+      stripTrackingParams(normalizeUrl(url)),
+    ),
   );
   logger.info(`Prepared ${urlsToRender.length} URLs to render`);
   logger.info(`Base URL: ${config.baseUrl}`);
@@ -783,7 +787,9 @@ async function main(): Promise<void> {
   const cacheTtlMap = new Map<string, number>();
   const urlToOriginalPathMap = new Map<string, string>();
   const urlsFromPaths = config.pathsList.map((entry) => {
-    const url = normalizeUrl(`${config.baseUrl}${entry.path}`);
+    const url = stripTrackingParams(
+      normalizeUrl(`${config.baseUrl}${entry.path}`),
+    );
     let encodedUrl: string;
     try {
       encodedUrl = encodeURI(decodeURI(url));

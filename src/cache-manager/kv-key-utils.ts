@@ -2,6 +2,48 @@ import { CACHE_VERSION } from "./type";
 
 const INTERNAL_PRERENDER_PARAM = "to_html";
 
+// Tracking params never change page content, so ?utm_source=... variants must
+// share one snapshot and one render instead of each minting a fresh cache
+// entry. Only params with that universal contract belong here — anything a
+// site might route content on (e.g. "ref", "page", "q") must stay.
+const TRACKING_PARAMS = new Set([
+  "fbclid",
+  "gclid",
+  "gbraid",
+  "wbraid",
+  "msclkid",
+  "ttclid",
+  "twclid",
+  "mc_cid",
+  "mc_eid",
+]);
+
+function isTrackingParam(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower.startsWith("utm_") || TRACKING_PARAMS.has(lower);
+}
+
+/**
+ * Strip tracking params from a full URL string so render targets, KV record
+ * URLs, and cache keys all agree on the canonical param-free form.
+ * Content params are preserved. Returns the input unchanged if unparseable.
+ */
+export function stripTrackingParams(targetUrl: string): string {
+  try {
+    const u = new URL(targetUrl);
+    let modified = false;
+    for (const param of [...u.searchParams.keys()]) {
+      if (isTrackingParam(param)) {
+        u.searchParams.delete(param);
+        modified = true;
+      }
+    }
+    return modified ? u.toString() : targetUrl;
+  } catch {
+    return targetUrl;
+  }
+}
+
 export function buildKvKey({ targetUrl }: { targetUrl: string }): string {
   let url: URL;
   try {
@@ -41,8 +83,10 @@ function canonicalizePathForKey({ url }: { url: URL }): string {
     "to_html",
     "x-lovablehtml-render",
   ]);
+  // Tracking params are also omitted at the key boundary so keys written by
+  // this job match the serve-path keys computed from already-stripped URLs.
   for (const [k, v] of url.searchParams.entries()) {
-    if (!omit.has(k)) params.push([k, v]);
+    if (!omit.has(k) && !isTrackingParam(k)) params.push([k, v]);
   }
   params.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
   const qs = params.map(([k, v]) => `${k}=${v}`).join("&");
