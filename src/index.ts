@@ -26,6 +26,12 @@ import {
   extractPathFromUrl,
   sleep,
 } from "./util";
+import {
+  countFailuresByReason,
+  toFailureDetail,
+  type PrerenderFailedPath,
+  type PrerenderFailureDetail,
+} from "./prerender-failure";
 
 interface PipelineResult {
   url: string;
@@ -34,6 +40,8 @@ interface PipelineResult {
   isAnalyzed: boolean;
   isCachedToR2: boolean;
   isCachedToKv: boolean;
+  /** Why the path failed — unset on success. */
+  failure?: PrerenderFailureDetail;
   payloadForKv?: {
     kvRecord: KvRecord;
     objectKey: string;
@@ -58,11 +66,11 @@ interface ReportResultBody {
   product_type: string;
   failed: {
     failed_to_render: {
-      paths: string[];
+      paths: PrerenderFailedPath[];
       count: number;
     };
     failed_to_sync: {
-      paths: string[];
+      paths: PrerenderFailedPath[];
       count: number;
     };
   };
@@ -153,7 +161,7 @@ async function reportResult({
     countRendered: number;
     countKvSynced: number;
     countR2Synced: number;
-    failedToRenderUrls: string[];
+    failedToRenderUrls: { url: string; failure: PrerenderFailureDetail }[];
     failedToSyncUrls: string[];
   }>(
     (acc, result) => {
@@ -167,9 +175,12 @@ async function reportResult({
         acc.countR2Synced++;
       }
       if (!result.isRendered) {
-        acc.failedToRenderUrls.push(result.url);
+        acc.failedToRenderUrls.push({
+          url: result.url,
+          failure: result.failure ?? { reason: "unknown" },
+        });
       }
-      if (!result.isCachedToKv || !result.isCachedToR2) {
+      if (result.isRendered && (!result.isCachedToKv || !result.isCachedToR2)) {
         acc.failedToSyncUrls.push(result.url);
       }
       if (result.isRendered && result.isCachedToKv && result.isCachedToR2) {
@@ -206,11 +217,17 @@ async function reportResult({
     product_type: config.productType,
     failed: {
       failed_to_render: {
-        paths: failedToRenderUrls.map(resolvePath),
+        paths: failedToRenderUrls.map(({ url, failure }) => ({
+          path: resolvePath(url),
+          error: failure,
+        })),
         count: failedToRenderUrls.length,
       },
       failed_to_sync: {
-        paths: failedToSyncUrls.map(resolvePath),
+        paths: failedToSyncUrls.map((url) => ({
+          path: resolvePath(url),
+          error: { reason: "sync_failed" as const },
+        })),
         count: failedToSyncUrls.length,
       },
     },
@@ -261,6 +278,22 @@ async function reportResult({
       ``,
       `*result:* success: ${successUrls.length}, render\\_failed: ${failedToRenderUrls.length}, sync\\_failed: ${failedToSyncUrls.length}`,
     ];
+    const failureCounts = countFailuresByReason(
+      failedToRenderUrls.map(({ failure }) => failure),
+    );
+    if (failedToSyncUrls.length > 0) {
+      failureCounts.sync_failed =
+        (failureCounts.sync_failed ?? 0) + failedToSyncUrls.length;
+    }
+    if (Object.keys(failureCounts).length > 0) {
+      lines.push(
+        `*failures by reason:* ${escapeMarkdownV2(
+          Object.entries(failureCounts)
+            .map(([reason, count]) => `${reason}: ${count}`)
+            .join(", "),
+        )}`,
+      );
+    }
     if (
       isFinalRetryRun &&
       parentBatchGroupIds.length > 0 &&
@@ -414,6 +447,7 @@ async function runPipeline({
       logger.info(`${INDENT}${INDENT}↳ ${path} - rendering completed`);
     } catch (e) {
       logger.error(`${INDENT}${INDENT}↳ ${path} - rendering failed`, e);
+      result.failure = toFailureDetail(e);
       return result;
     }
 
@@ -458,6 +492,7 @@ async function runPipeline({
       logger.info(`${INDENT}${INDENT}↳ ${path} - SEO analysis completed`);
     } catch (e) {
       logger.error(`${INDENT}${INDENT}↳ ${path} - SEO analysis failed`, e);
+      result.failure = { reason: "unknown" };
       return result;
     }
 
@@ -640,6 +675,7 @@ async function runPipelineStreams({
     isAnalyzed: false,
     isCachedToR2: false,
     isCachedToKv: false,
+    failure: { reason: "unknown" },
   });
 
   const runStream = async (slot: number): Promise<void> => {
