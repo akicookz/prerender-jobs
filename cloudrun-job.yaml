@@ -20,7 +20,7 @@ spec:
                   value: "7716949926"
               resources:
                 limits:
-                  cpu: 3000m
-                  memory: 2Gi
+                  cpu: 2000m
+                  memory: 3Gi
           maxRetries: 1
           timeoutSeconds: "7200"
