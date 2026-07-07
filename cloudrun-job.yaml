@@ -21,6 +21,6 @@ spec:
               resources:
                 limits:
                   cpu: 2000m
-                  memory: 2Gi
-          maxRetries: 2
-          timeoutSeconds: "1200"
+                  memory: 3Gi
+          maxRetries: 1
+          timeoutSeconds: "7200"
