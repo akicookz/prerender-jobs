@@ -341,7 +341,7 @@ async function reportResult({
 async function launchBrowser(): Promise<Browser> {
   try {
     const browser = await puppeteer.launch({
-      executablePath: "/usr/bin/chromium",
+      executablePath: "/usr/bin/chrome",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -383,55 +383,103 @@ async function runPipeline({
     isCachedToKv: false,
   };
   logger.info(`[${pipelineNumber}] Processing ${urlToRender}`);
-  const renderer = RenderEngine.register({
-    targetUrl: urlToRender,
-    browser,
-    userAgent: config.userAgent,
-    internalKey: config.internalKey,
-    // Renders target the origin host directly, but the page's own absolute
-    // URLs hit the customer domain (behind the rate-limiting Fly proxy) —
-    // those requests need the key too.
-    internalKeyHosts: [config.domain, config.canonicalDomain],
-  });
 
-  let renderResult: RenderResult;
-  try {
-    renderResult = await renderer.renderPage();
-    result.isRendered = true;
-    logger.info(`${INDENT}${INDENT}↳ ${path} - rendering completed`);
-  } catch (e) {
-    logger.error(`${INDENT}${INDENT}↳ ${path} - rendering failed`, e);
+  // A soft-404 result usually means the snapshot caught the SPA's loading
+  // shell (readiness heuristics can fire while a starved renderer still holds
+  // the route's Suspense fallback). Retry once with widened stability
+  // windows; if the content is still thin after that, cache it as-is — the
+  // page may just be genuinely minimal.
+  const MAX_CONTENT_ATTEMPTS = 2;
+  let renderResult: RenderResult | null = null;
+  let preparedHtml = "";
+  let dataUrlMap = new Map<string, string>();
+  let sanitizedHtml = "";
+  let seoAnalysisResult: PageSeoAnalysis | null = null;
+
+  for (let attempt = 1; attempt <= MAX_CONTENT_ATTEMPTS; attempt++) {
+    const renderer = RenderEngine.register({
+      targetUrl: urlToRender,
+      browser,
+      userAgent: config.userAgent,
+      internalKey: config.internalKey,
+      // Renders target the origin host directly, but the page's own absolute
+      // URLs hit the customer domain (behind the rate-limiting Fly proxy) —
+      // those requests need the key too.
+      internalKeyHosts: [config.domain, config.canonicalDomain],
+      extendedStability: attempt > 1,
+    });
+
+    try {
+      renderResult = await renderer.renderPage();
+      logger.info(`${INDENT}${INDENT}↳ ${path} - rendering completed`);
+    } catch (e) {
+      logger.error(`${INDENT}${INDENT}↳ ${path} - rendering failed`, e);
+      return result;
+    }
+
+    // Swap any oversized base64 data URLs for short placeholder tokens so they
+    // don't trigger node-html-parser's regex stack overflow. The originals are
+    // restored after sanitization, before the HTML is persisted.
+    ({ html: preparedHtml, urlMap: dataUrlMap } = extractOversizedDataUrls(
+      renderResult.html,
+    ));
+    if (dataUrlMap.size > 0) {
+      logger.info(
+        `${INDENT}${INDENT}↳ ${path} - stashed ${dataUrlMap.size} oversized data URL(s) before parsing (${renderResult.html.length} → ${preparedHtml.length} bytes)`,
+      );
+    }
+
+    // Sanitize rendered HTML: fix metadata, remove noise, inject missing tags
+    try {
+      sanitizedHtml = sanitizeHtml({
+        html: preparedHtml,
+        url: renderResult.finalUrl,
+        canonicalDomain: config.canonicalDomain,
+      });
+      logger.debug(`Sanitized HTML: ${sanitizedHtml}`);
+    } catch (e) {
+      logger.error(
+        `${INDENT}${INDENT}↳ ${path} - HTML sanitization failed fallback to original HTML`,
+        e,
+      );
+      sanitizedHtml = preparedHtml;
+    }
+    logger.info(`${INDENT}${INDENT}↳ ${path} - HTML sanitized`);
+
+    try {
+      const analyzer = SeoAnalyzer.register({
+        html: sanitizedHtml,
+        url: renderResult.finalUrl,
+        statusCode: renderResult.statusCode,
+        xRobotsTag: renderResult.xRobotsTag ?? null,
+      });
+      seoAnalysisResult = analyzer.analyze();
+      result.isAnalyzed = true;
+      logger.info(`${INDENT}${INDENT}↳ ${path} - SEO analysis completed`);
+    } catch (e) {
+      logger.error(`${INDENT}${INDENT}↳ ${path} - SEO analysis failed`, e);
+      return result;
+    }
+
+    if (!seoAnalysisResult.isSoft404) {
+      break;
+    }
+    if (attempt < MAX_CONTENT_ATTEMPTS) {
+      logger.warn(
+        `${INDENT}${INDENT}↳ ${path} - soft-404 content (${seoAnalysisResult.wordCount} words), retrying with extended stability windows`,
+      );
+    }
+  }
+
+  if (!renderResult || !seoAnalysisResult) {
     return result;
   }
-
-  // Swap any oversized base64 data URLs for short placeholder tokens so they
-  // don't trigger node-html-parser's regex stack overflow. The originals are
-  // restored after sanitization, before the HTML is persisted.
-  const { html: preparedHtml, urlMap: dataUrlMap } = extractOversizedDataUrls(
-    renderResult.html,
-  );
-  if (dataUrlMap.size > 0) {
-    logger.info(
-      `${INDENT}${INDENT}↳ ${path} - stashed ${dataUrlMap.size} oversized data URL(s) before parsing (${renderResult.html.length} → ${preparedHtml.length} bytes)`,
+  if (seoAnalysisResult.isSoft404) {
+    logger.warn(
+      `${INDENT}${INDENT}↳ ${path} - soft-404 content persisted after retry (${seoAnalysisResult.wordCount} words), caching as-is`,
     );
   }
-
-  // Sanitize rendered HTML: fix metadata, remove noise, inject missing tags
-  let sanitizedHtml: string;
-  try {
-    sanitizedHtml = sanitizeHtml({
-      html: preparedHtml,
-      url: renderResult.finalUrl,
-      canonicalDomain: config.canonicalDomain,
-    });
-  } catch (e) {
-    logger.error(
-      `${INDENT}${INDENT}↳ ${path} - HTML sanitization failed fallback to original HTML`,
-      e,
-    );
-    sanitizedHtml = preparedHtml;
-  }
-  logger.info(`${INDENT}${INDENT}↳ ${path} - HTML sanitized`);
+  result.isRendered = true;
 
   // Detect SEO metadata lost during sanitization. Both inputs carry the same
   // placeholders, so property-presence comparisons stay accurate.
@@ -474,22 +522,6 @@ async function runPipeline({
     );
   }
 
-  let seoAnalysisResult: PageSeoAnalysis | null = null;
-  try {
-    const analyzer = SeoAnalyzer.register({
-      html: sanitizedHtml,
-      url: renderResult.finalUrl,
-      statusCode: renderResult.statusCode,
-      xRobotsTag: renderResult.xRobotsTag ?? null,
-    });
-    seoAnalysisResult = analyzer.analyze();
-    result.isAnalyzed = true;
-    logger.info(`${INDENT}${INDENT}↳ ${path} - SEO analysis completed`);
-  } catch (e) {
-    logger.error(`${INDENT}${INDENT}↳ ${path} - SEO analysis failed`, e);
-    return result;
-  }
-
   // Restore the stashed data URLs into the final HTML before persistence.
   const finalSanitizedHtml = restoreDataUrls(sanitizedHtml, dataUrlMap);
 
@@ -530,7 +562,7 @@ async function runPipeline({
   return result;
 }
 
-async function runPipelineBatches({
+async function runPipelineStreams({
   concurrency,
   urlsToRender,
   cacheTtlMap,
@@ -546,14 +578,19 @@ async function runPipelineBatches({
   const pipelineResults: PipelineResult[] = [];
   // Cap concurrency to the number of URLs so we don't launch idle browsers.
   concurrency = Math.min(concurrency, urlsToRender.length || 1);
-  const totalNumberOfBatches = Math.ceil(urlsToRender.length / concurrency);
-  logger.info(`Running pipeline batches with concurrency: ${concurrency}`);
-  logger.info(`${INDENT}↳ ${totalNumberOfBatches} batches`);
+  logger.info(
+    `Running pipeline with ${concurrency} parallel streams over ${urlsToRender.length} URLs`,
+  );
   if (config.skipCacheSync) {
     logger.info(`${INDENT}↳ SKIPPING CACHING: SKIP_CACHE_SYNC is true`);
   }
 
-  const REFRESH_EVERY_BATCHES = 20;
+  // Recycle each stream's browser periodically so long runs don't accumulate
+  // Chromium memory bloat.
+  const REFRESH_EVERY_RENDERS = 20;
+  // Stagger stream start-up so the CPU-heavy boot phase of concurrent renders
+  // (bundle parse/eval) doesn't land on the container all at once.
+  const STREAM_START_STAGGER_MS = 2_000;
 
   // Allocate one browser per stream (one per concurrency slot) up front.
   const browsers: (Browser | null)[] = new Array<Browser | null>(
@@ -591,83 +628,79 @@ async function runPipelineBatches({
     }
   };
 
-  const refreshAllBrowsers = async (reason: string): Promise<void> => {
-    logger.info(`[Browser] Refreshing all ${concurrency} browsers (${reason})`);
-    await Promise.all(
-      browsers.map(async (b, i) => {
+  // Each stream pulls the next URL as soon as it finishes its current one —
+  // no batch barrier, so one slow render never idles the other streams and
+  // their next renders never start in lockstep.
+  let nextUrlIndex = 0;
+
+  const failedResult = (url: string): PipelineResult => ({
+    url,
+    cacheTtl: cacheTtlMap.get(url) ?? 604800,
+    isRendered: false,
+    isAnalyzed: false,
+    isCachedToR2: false,
+    isCachedToKv: false,
+  });
+
+  const runStream = async (slot: number): Promise<void> => {
+    if (slot > 0) {
+      await sleep(slot * STREAM_START_STAGGER_MS);
+    }
+    let rendersOnBrowser = 0;
+    while (nextUrlIndex < urlsToRender.length) {
+      const urlIndex = nextUrlIndex++;
+      const url = urlsToRender[urlIndex];
+      if (url === undefined) {
+        break;
+      }
+      const cacheTtl = cacheTtlMap.get(url) ?? 604800;
+
+      if (rendersOnBrowser >= REFRESH_EVERY_RENDERS) {
+        const b = browsers[slot];
         if (b) await b.close().catch(() => {});
-        try {
-          browsers[i] = await launchBrowserFn();
-        } catch (e) {
-          logger.error(
-            `[Browser] Failed to relaunch browser for stream ${i}`,
-            e,
-          );
-          browsers[i] = null;
+        browsers[slot] = null;
+        rendersOnBrowser = 0;
+        logger.info(
+          `[Browser] Stream ${slot} browser recycled after ${REFRESH_EVERY_RENDERS} renders`,
+        );
+      }
+
+      const browser = await ensureHealthy(slot);
+      if (!browser) {
+        pipelineResults.push(failedResult(url));
+        continue;
+      }
+      try {
+        pipelineResults.push(
+          await runPipeline({
+            pipelineNumber: urlIndex + 1,
+            urlToRender: url,
+            cacheTtl,
+            config,
+            browser,
+          }),
+        );
+      } catch (e) {
+        logger.error(
+          `[Stream ${slot}] Pipeline threw for ${extractPathFromUrl(url)}`,
+          e,
+        );
+        // If the browser died mid-render, drop it so the next render relaunches.
+        const b = browsers[slot];
+        if (b && !b.connected) {
+          await b.close().catch(() => {});
+          browsers[slot] = null;
         }
-      }),
-    );
+        pipelineResults.push(failedResult(url));
+      }
+      rendersOnBrowser++;
+    }
   };
 
   try {
-    let processedCount = 0;
-    for (let i = 0; i < urlsToRender.length; i += concurrency) {
-      const batchNumber = i / concurrency + 1;
-      logger.info(`Start batch ${batchNumber} of ${totalNumberOfBatches}`);
-
-      const batchUrls = urlsToRender.slice(i, i + concurrency);
-      const batchResults = await Promise.all(
-        batchUrls.map(async (url, slot) => {
-          const cacheTtl = cacheTtlMap.get(url) ?? 604800;
-          const browser = await ensureHealthy(slot);
-          if (!browser) {
-            return {
-              url,
-              cacheTtl,
-              isRendered: false,
-              isAnalyzed: false,
-              isCachedToR2: false,
-              isCachedToKv: false,
-            } satisfies PipelineResult;
-          }
-          try {
-            return await runPipeline({
-              pipelineNumber: processedCount + slot + 1,
-              urlToRender: url,
-              cacheTtl,
-              config,
-              browser,
-            });
-          } catch (e) {
-            logger.error(
-              `[Stream ${slot}] Pipeline threw for ${extractPathFromUrl(url)}`,
-              e,
-            );
-            // If the browser died mid-render, drop it so the next batch relaunches.
-            const b = browsers[slot];
-            if (b && !b.connected) {
-              await b.close().catch(() => {});
-              browsers[slot] = null;
-            }
-            return {
-              url,
-              cacheTtl,
-              isRendered: false,
-              isAnalyzed: false,
-              isCachedToR2: false,
-              isCachedToKv: false,
-            } satisfies PipelineResult;
-          }
-        }),
-      );
-      pipelineResults.push(...batchResults);
-      processedCount += batchUrls.length;
-
-      const remainingUrls = urlsToRender.length - processedCount;
-      if (batchNumber % REFRESH_EVERY_BATCHES === 0 && remainingUrls > 0) {
-        await refreshAllBrowsers(`every ${REFRESH_EVERY_BATCHES} batches`);
-      }
-    }
+    await Promise.all(
+      Array.from({ length: concurrency }, (_, slot) => runStream(slot)),
+    );
   } finally {
     await Promise.all(
       browsers.map((b) => (b ? b.close().catch(() => {}) : Promise.resolve())),
@@ -813,8 +846,8 @@ async function main(): Promise<void> {
     sitemapUrl = result.sitemapUrl;
   }
 
-  // STEP 2+3 : Run the pipeline batches (one browser per batch).
-  const { resultMap: urlResultMap } = await runPipelineBatches({
+  // STEP 2+3 : Run the pipeline streams (one browser per stream).
+  const { resultMap: urlResultMap } = await runPipelineStreams({
     concurrency: config.concurrency,
     urlsToRender,
     cacheTtlMap,

@@ -110,6 +110,7 @@ type ReadinessState = {
   appSignaled: boolean;
   networkIdleSince: number | null;
   domStableSince: number | null;
+  heartbeatAtNetworkIdle: number | null;
 };
 
 export class RenderEngine {
@@ -118,6 +119,7 @@ export class RenderEngine {
   private readonly _userAgent: string;
   private readonly _internalKey: string | null;
   private readonly _internalKeyHosts: Set<string>;
+  private readonly _stabilityMultiplier: number;
   private readonly _logger: AppLogger;
 
   static register({
@@ -126,12 +128,16 @@ export class RenderEngine {
     userAgent,
     internalKey,
     internalKeyHosts,
+    extendedStability,
   }: {
     targetUrl: string;
     browser: Browser;
     userAgent: string;
     internalKey?: string;
     internalKeyHosts?: string[];
+    // Widens the readiness quiet/stable windows 4x. Used when retrying a
+    // render whose first attempt produced a loading-shell snapshot.
+    extendedStability?: boolean;
   }) {
     return new RenderEngine(
       targetUrl,
@@ -139,6 +145,7 @@ export class RenderEngine {
       userAgent,
       internalKey ?? null,
       internalKeyHosts ?? [],
+      extendedStability ?? false,
     );
   }
 
@@ -148,6 +155,7 @@ export class RenderEngine {
     userAgent: string,
     internalKey: string | null,
     internalKeyHosts: string[],
+    extendedStability: boolean,
   ) {
     this._url = targetUrl;
     this._browser = browser;
@@ -162,6 +170,7 @@ export class RenderEngine {
           h.startsWith("www.") ? [h, h.slice(4)] : [h, `www.${h}`],
         ),
     );
+    this._stabilityMultiplier = extendedStability ? 4 : 1;
     this._logger = AppLogger.register({ prefix: "render-engine" });
   }
 
@@ -654,6 +663,26 @@ export class RenderEngine {
     }
   }
 
+  private async getHeartbeatTick({
+    page,
+  }: {
+    page: Page;
+  }): Promise<number | null> {
+    try {
+      const result = await Promise.race([
+        page.evaluate(() => {
+          // @ts-expect-error - custom window properties
+          return (window.__heartbeatTick ?? null) as number | null;
+        }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000)),
+      ]);
+
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
   private async injectPrerenderScripts({
     page,
   }: {
@@ -668,6 +697,18 @@ export class RenderEngine {
             window.__TO_HTML = true;
             // @ts-expect-error - custom window properties
             window.__lastDomChange = Date.now();
+
+            // Main-thread heartbeat. A renderer starved of CPU (e.g. module
+            // evaluation of a lazy route chunk while sibling renders hog the
+            // container) can't service timers, so a stalled counter tells the
+            // readiness poll that "quiet network + static DOM" just means the
+            // page hasn't had CPU time to render yet.
+            // @ts-expect-error - custom window properties
+            window.__heartbeatTick = 0;
+            setInterval(() => {
+              // @ts-expect-error - custom window properties
+              window.__heartbeatTick++;
+            }, 100);
 
             const setup = () => {
               // Disable CSS animations/transitions to prevent continuous DOM mutations
@@ -744,18 +785,24 @@ export class RenderEngine {
   }): Promise<string> {
     // Readiness detection constants
     const HARD_TIMEOUT_MS = 30_000;
-    const NETWORK_QUIET_MS = 500;
-    const DOM_STABLE_MS = 500;
+    const NETWORK_QUIET_MS = 500 * this._stabilityMultiplier;
+    const DOM_STABLE_MS = 500 * this._stabilityMultiplier;
     const POLL_INTERVAL_MS = 400;
     // After network+DOM are stable, wait an extra period for a final DOM
     // settle before taking the snapshot (covers late Helmet injections).
-    const POST_READY_SETTLE_MS = 300;
+    const POST_READY_SETTLE_MS = 300 * this._stabilityMultiplier;
+    // Minimum injected-heartbeat ticks (100ms each) that must elapse after
+    // the network goes quiet before "stable" is believable — proves the
+    // renderer's main thread actually got CPU time to turn any downloaded
+    // code into DOM, instead of being starved mid-boot.
+    const MIN_HEARTBEAT_TICKS_SINCE_IDLE = 3;
 
     const startedAt = Date.now();
     const state: ReadinessState = {
       appSignaled: false,
       networkIdleSince: null,
       domStableSince: null,
+      heartbeatAtNetworkIdle: null,
     };
 
     return new Promise<string>((resolve, reject) => {
@@ -828,9 +875,13 @@ export class RenderEngine {
           if (firstPartyReqPending.size === 0) {
             if (state.networkIdleSince === null) {
               state.networkIdleSince = now;
+              state.heartbeatAtNetworkIdle = await this.getHeartbeatTick({
+                page,
+              });
             }
           } else {
             state.networkIdleSince = null;
+            state.heartbeatAtNetworkIdle = null;
           }
 
           const lastDomChange = await this.getLastDomChange({ page });
@@ -845,7 +896,20 @@ export class RenderEngine {
 
           const networkIdleDuration =
             state.networkIdleSince !== null ? now - state.networkIdleSince : 0;
-          const networkStable = networkIdleDuration >= NETWORK_QUIET_MS;
+          let networkStable = networkIdleDuration >= NETWORK_QUIET_MS;
+          if (networkStable && state.heartbeatAtNetworkIdle !== null) {
+            const heartbeat = await this.getHeartbeatTick({ page });
+            if (
+              heartbeat !== null &&
+              heartbeat - state.heartbeatAtNetworkIdle <
+                MIN_HEARTBEAT_TICKS_SINCE_IDLE
+            ) {
+              this._logger.debug(
+                `[Prerender] Network quiet but renderer main thread stalled (${heartbeat - state.heartbeatAtNetworkIdle} heartbeat ticks since idle), holding snapshot`,
+              );
+              networkStable = false;
+            }
+          }
           const domStable = state.domStableSince !== null;
 
           // Trust the app signal only once first-party requests have gone

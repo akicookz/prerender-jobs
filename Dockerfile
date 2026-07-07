@@ -14,9 +14,13 @@ RUN pnpm build
 
 FROM node:22-slim AS runner
 
+# Chrome for Testing build matched to puppeteer-core (see pptr.dev/supported-browsers).
+# Bump this together with the puppeteer-core version in package.json.
+ARG CHROME_VERSION=150.0.7871.24
+
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y chromium ca-certificates \
+RUN apt-get update && apt-get install -y ca-certificates \
   fonts-liberation \
   libasound2 \
 	libatk-bridge2.0-0 \
@@ -50,8 +54,13 @@ RUN apt-get update && apt-get install -y chromium ca-certificates \
 	libxss1 \
 	libxtst6 \
 	lsb-release \
+	unzip \
 	wget \
-	xdg-utils 
+	xdg-utils
+
+RUN npx -y @puppeteer/browsers install chrome@${CHROME_VERSION} --path /opt/chrome \
+  && ln -s /opt/chrome/chrome/linux-${CHROME_VERSION}/chrome-linux64/chrome /usr/bin/chrome \
+  && /usr/bin/chrome --version
 
 COPY --from=builder /app/dist/ ./dist/
 COPY --from=builder /app/node_modules/ ./node_modules/
