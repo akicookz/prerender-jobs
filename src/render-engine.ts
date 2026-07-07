@@ -2,6 +2,7 @@ import { Browser, ConsoleMessage, HTTPRequest, Page } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { AppLogger } from "./logger";
 import { RenderTracer } from "./render-tracer";
+import { RenderFailureError } from "./prerender-failure";
 
 const DEFAULT_RENDER_TIMEOUT = 65_000; // 65 seconds
 const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
@@ -485,14 +486,19 @@ export class RenderEngine {
 
     const statusCode = response.status();
 
-    // Don't cache server error pages — they're transient origin failures
-    if (statusCode >= 500) {
-      throw new Error(`Origin returned ${statusCode} for ${this._url}`);
+    // Error pages (4xx/5xx) are never cached; the status rides on the error
+    // so the batch report can distinguish deterministic 404s from transient 5xx.
+    if (statusCode >= 400) {
+      throw new RenderFailureError(
+        `Origin returned ${statusCode} for ${this._url}`,
+        { reason: "fetch_error", status: statusCode },
+      );
     }
 
     if (navigationCount > MAX_NAVIGATIONS) {
-      throw new Error(
+      throw new RenderFailureError(
         `Navigation loop detected for ${this._url}: ${navigationCount} navigations (final URL: ${page.url()})`,
+        { reason: "navigation_loop" },
       );
     }
 
