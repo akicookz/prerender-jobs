@@ -120,7 +120,7 @@ export class R2Loader {
         r2Metadata: this.buildR2ObjectMetadata({ kvRecord }),
       });
     } catch (e) {
-      this._logger.error(`Failed to upload R2 object: ${String(e)}`);
+      this._logger.error("Failed to upload R2 object:", e);
       return {
         r2Synced: false,
       };
