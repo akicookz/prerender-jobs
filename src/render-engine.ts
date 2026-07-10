@@ -707,7 +707,11 @@ export class RenderEngine {
   }
 
   private isIgnoredPath(path: string): boolean {
-    const ignoredPaths = ["fb-conversions-api"];
+    // Telemetry served from the customer's own hostname — it loads normally
+    // but must not gate the snapshot: a hanging beacon would otherwise hold
+    // first-party pending requests open and ride every render to the hard
+    // timeout. ~flock.js and /___l5e/ are Lovable's injected analytics.
+    const ignoredPaths = ["fb-conversions-api", "~flock.js", "/___l5e/"];
     return ignoredPaths.some((p) => path.includes(p));
   }
 
