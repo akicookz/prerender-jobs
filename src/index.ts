@@ -808,9 +808,7 @@ async function runPipelineStreams({
         r.renderDurationMs !== undefined
           ? `${(r.renderDurationMs / 1000).toFixed(1)}s`
           : `failed (${r.failure?.reason ?? "unknown"})`;
-      logger.info(
-        `${INDENT}${extractPathFromUrl(r.url)} — ${duration}`,
-      );
+      logger.info(`${INDENT}${extractPathFromUrl(r.url)} — ${duration}`);
     }
 
     const reqStats = requestStats.stats();
@@ -819,18 +817,60 @@ async function runPipelineStreams({
         `${reqStats.thirdPartyRequests} to third parties, ${reqStats.blockedRequests} image/media blocked`,
     );
 
-    if (assetCache) {
-      const cacheStats = assetCache.stats();
+    const cacheStats = assetCache ? assetCache.stats() : null;
+    const cacheableTotal = cacheStats
+      ? cacheStats.hits + cacheStats.misses
+      : 0;
+    const hitRatePct =
+      cacheStats && cacheableTotal > 0
+        ? (cacheStats.hits / cacheableTotal) * 100
+        : 0;
+    if (cacheStats) {
       const toMb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
-      const cacheableTotal = cacheStats.hits + cacheStats.misses;
-      const hitRate =
-        cacheableTotal > 0
-          ? ((cacheStats.hits / cacheableTotal) * 100).toFixed(1)
-          : "0.0";
       logger.info(
-        `[AssetCache] ${cacheStats.hits}/${cacheableTotal} cacheable asset requests served from memory (${hitRate}%, ${toMb(cacheStats.servedBytes)} MB kept off origin); ` +
+        `[AssetCache] ${cacheStats.hits}/${cacheableTotal} cacheable asset requests served from memory (${hitRatePct.toFixed(1)}%, ${toMb(cacheStats.servedBytes)} MB kept off origin); ` +
           `${cacheStats.entryCount} unique assets cached (${toMb(cacheStats.storedBytes)} MB stored, ${cacheStats.skippedEntries} skipped by size caps)`,
       );
+    }
+
+    // Machine-readable copy of the summary, next to the run's snapshots —
+    // lets cache-on/cache-off runs be diffed without scraping logs.
+    if (snapshotDir) {
+      const summary = {
+        finishedAt: DateTime.now().toUTC().toISO(),
+        concurrency,
+        assetCacheEnabled: assetCache !== null,
+        pages: pipelineResults.map((r) => ({
+          path: extractPathFromUrl(r.url),
+          url: r.url,
+          rendered: r.isRendered,
+          renderDurationMs: r.renderDurationMs ?? null,
+          failureReason: r.failure?.reason ?? null,
+        })),
+        outboundRequests: {
+          customerOrigin: reqStats.originRequests,
+          thirdParty: reqStats.thirdPartyRequests,
+          imageMediaBlocked: reqStats.blockedRequests,
+        },
+        assetCache: cacheStats
+          ? {
+              hits: cacheStats.hits,
+              misses: cacheStats.misses,
+              hitRatePct: Number(hitRatePct.toFixed(1)),
+              servedBytes: cacheStats.servedBytes,
+              uniqueAssets: cacheStats.entryCount,
+              storedBytes: cacheStats.storedBytes,
+              skippedEntries: cacheStats.skippedEntries,
+            }
+          : null,
+      };
+      const summaryFile = join(snapshotDir, "summary.json");
+      try {
+        await writeFile(summaryFile, JSON.stringify(summary, null, 2));
+        logger.info(`[Summary] Written to ${summaryFile}`);
+      } catch (e) {
+        logger.warn(`[Summary] Failed to write ${summaryFile}`, e);
+      }
     }
   }
 
