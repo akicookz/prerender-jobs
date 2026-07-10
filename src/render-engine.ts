@@ -710,8 +710,9 @@ export class RenderEngine {
     // Telemetry served from the customer's own hostname — it loads normally
     // but must not gate the snapshot: a hanging beacon would otherwise hold
     // first-party pending requests open and ride every render to the hard
-    // timeout. ~flock.js and /___l5e/ are Lovable's injected analytics.
-    const ignoredPaths = ["fb-conversions-api", "~flock.js", "/___l5e/"];
+    // timeout. ~flock.js and /__l5e/ (events.js, trackevents) are Lovable's
+    // injected analytics.
+    const ignoredPaths = ["fb-conversions-api", "~flock.js", "__l5e/"];
     return ignoredPaths.some((p) => path.includes(p));
   }
 
