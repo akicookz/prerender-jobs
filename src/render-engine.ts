@@ -277,6 +277,10 @@ export class RenderEngine {
           const text = msg.text();
           // Skip noisy warnings about preload/crossorigin mismatches
           if (text.includes("preload") && text.includes("crossorigin")) return;
+          // Skip load failures from our own image/media blocking — an
+          // image-heavy page would otherwise fill the consoleErrors cap
+          // with them and drown out real errors.
+          if (text.includes("ERR_BLOCKED_BY_CLIENT")) return;
           // Only log errors, not warnings/info
           if (msg.type() === "error") {
             this._logger.debug(
