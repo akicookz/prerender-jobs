@@ -626,11 +626,22 @@ export class RenderEngine {
     ) {
       return;
     }
+    const resHeaders = res.headers();
+    // A 200 with an HTML body for a script/stylesheet/font/image URL is the
+    // signature of a WAF challenge, error page, or mid-deploy hiccup — never
+    // a real asset. Caching it would replay the broken body into every
+    // remaining render of the job, so let each render fetch it fresh instead.
+    const contentType = (resHeaders["content-type"] ?? "").toLowerCase();
+    if (contentType.includes("text/html")) {
+      this._logger.debug(
+        `[AssetCache] Not caching ${url}: HTML body for a ${req.resourceType()} request`,
+      );
+      return;
+    }
     const body = await res.buffer().catch(() => null);
     if (!body || body.length === 0) {
       return;
     }
-    const resHeaders = res.headers();
     const corsHeaders: Record<string, string> = {};
     for (const name of [
       "access-control-allow-origin",
