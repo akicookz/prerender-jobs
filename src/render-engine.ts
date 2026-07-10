@@ -707,12 +707,18 @@ export class RenderEngine {
   }
 
   private isIgnoredPath(path: string): boolean {
-    // Telemetry served from the customer's own hostname — it loads normally
-    // but must not gate the snapshot: a hanging beacon would otherwise hold
-    // first-party pending requests open and ride every render to the hard
-    // timeout. ~flock.js and /__l5e/ (events.js, trackevents) are Lovable's
-    // injected analytics.
-    const ignoredPaths = ["fb-conversions-api", "~flock.js", "__l5e/"];
+    // Telemetry that must not gate the snapshot: a repeatedly-firing beacon
+    // resets the network-idle clock and rides every render to the hard
+    // timeout. The requests still load normally. ~flock.js and /__l5e/
+    // (events.js, trackevents) are Lovable's injected analytics;
+    // track_growth_event is Lovable's growth-telemetry Supabase RPC (fetch/xhr
+    // are tracked regardless of host, so a host rule can't catch it).
+    const ignoredPaths = [
+      "fb-conversions-api",
+      "~flock.js",
+      "__l5e/",
+      "track_growth_event",
+    ];
     return ignoredPaths.some((p) => path.includes(p));
   }
 
@@ -767,6 +773,9 @@ export class RenderEngine {
       "kular.ai",
       "mapbox.com",
       "chatwhisperer.ai",
+      // Turnstile challenge polling can run for many seconds and never
+      // contributes snapshot content.
+      "challenges.cloudflare.com",
     ];
     return ignoredHosts.some((h) => host === h || host.endsWith(`.${h}`));
   }
