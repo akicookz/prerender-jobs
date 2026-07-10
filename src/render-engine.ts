@@ -22,9 +22,13 @@ const MAX_NAVIGATIONS = 10;
 const MAX_RENDER_ATTEMPTS = 2;
 // Static asset types eligible for the job-wide AssetCache. Documents and
 // xhr/fetch responses must never be cached — snapshots would capture stale
-// data. Images aren't listed because they're blocked outright (see the
-// request handler).
-const CACHEABLE_ASSET_TYPES = new Set(["script", "stylesheet", "font"]);
+// data.
+const CACHEABLE_ASSET_TYPES = new Set([
+  "script",
+  "stylesheet",
+  "font",
+  "image",
+]);
 // Cap diagnostics lists so a pathological page (e.g. an ad script erroring in a
 // loop) can't grow them unbounded.
 const DIAG_MAX_ENTRIES = 50;
@@ -277,10 +281,6 @@ export class RenderEngine {
           const text = msg.text();
           // Skip noisy warnings about preload/crossorigin mismatches
           if (text.includes("preload") && text.includes("crossorigin")) return;
-          // Skip load failures from our own image/media blocking — an
-          // image-heavy page would otherwise fill the consoleErrors cap
-          // with them and drown out real errors.
-          if (text.includes("ERR_BLOCKED_BY_CLIENT")) return;
           // Only log errors, not warnings/info
           if (msg.type() === "error") {
             this._logger.debug(
@@ -321,11 +321,9 @@ export class RenderEngine {
       page.on("requestfailed", (req: HTTPRequest) => {
         try {
           const errorText = req.failure()?.errorText || "";
-          // Skip non-critical failures (fonts, ORB blocks, analytics) and our
-          // own deliberate image/media blocks (ERR_BLOCKED_BY_CLIENT).
+          // Skip non-critical failures (fonts, ORB blocks, analytics)
           if (
             errorText.includes("ERR_BLOCKED_BY_ORB") ||
-            errorText.includes("ERR_BLOCKED_BY_CLIENT") ||
             errorText.includes("ERR_ABORTED") ||
             req.url().includes("fonts.googleapis.com") ||
             req.url().includes("fonts.gstatic.com") ||
@@ -434,21 +432,12 @@ export class RenderEngine {
         return;
       }
 
-      // The snapshot is HTML, not pixels — image/media downloads only add
-      // load on the customer's origin. The <img>/<video> tags still land in
-      // the snapshot; only the binary fetch is skipped. blockedbyclient keeps
-      // these aborts out of the failed-request diagnostics.
       const resourceType = req.resourceType() as unknown as string;
-      if (resourceType === "image" || resourceType === "media") {
-        this._requestStats?.countBlocked();
-        req.abort("blockedbyclient").catch(() => void 0);
-        return;
-      }
 
       // Serve repeat static-asset requests from the job-wide cache so each
-      // bundle/stylesheet/font hits the origin once per job, not once per
-      // render. Cache-served requests never reach the network, so they skip
-      // the pending-request tracking below.
+      // bundle/stylesheet/font/image hits the origin once per job, not once
+      // per render. Cache-served requests never reach the network, so they
+      // skip the pending-request tracking below.
       if (this._assetCache && req.method() === "GET") {
         const cached = this._assetCache.get(req.url());
         if (cached) {
@@ -668,14 +657,13 @@ export class RenderEngine {
     targetHost: string;
     path: string;
   }): boolean {
-    // "image" is intentionally absent — image requests are aborted at the
-    // interception layer and never reach the network.
     const trackResourceTypes = new Set([
       "document",
       "script",
       "xhr",
       "fetch",
       "stylesheet",
+      "image",
     ]);
     try {
       const host = getHostname(req.url());

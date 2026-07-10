@@ -4,7 +4,6 @@
 export class RequestStats {
   private _originRequests = 0;
   private _thirdPartyRequests = 0;
-  private _blockedRequests = 0;
 
   static register(): RequestStats {
     return new RequestStats();
@@ -18,19 +17,13 @@ export class RequestStats {
     }
   }
 
-  countBlocked(): void {
-    this._blockedRequests++;
-  }
-
   stats(): {
     originRequests: number;
     thirdPartyRequests: number;
-    blockedRequests: number;
   } {
     return {
       originRequests: this._originRequests,
       thirdPartyRequests: this._thirdPartyRequests,
-      blockedRequests: this._blockedRequests,
     };
   }
 }

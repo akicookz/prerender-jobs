@@ -814,7 +814,7 @@ async function runPipelineStreams({
     const reqStats = requestStats.stats();
     logger.info(
       `[Summary] Outbound requests: ${reqStats.originRequests} to customer origin, ` +
-        `${reqStats.thirdPartyRequests} to third parties, ${reqStats.blockedRequests} image/media blocked`,
+        `${reqStats.thirdPartyRequests} to third parties`,
     );
 
     const cacheStats = assetCache ? assetCache.stats() : null;
@@ -850,7 +850,6 @@ async function runPipelineStreams({
         outboundRequests: {
           customerOrigin: reqStats.originRequests,
           thirdParty: reqStats.thirdPartyRequests,
-          imageMediaBlocked: reqStats.blockedRequests,
         },
         assetCache: cacheStats
           ? {
