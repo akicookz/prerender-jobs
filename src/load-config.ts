@@ -43,6 +43,8 @@ enum ConfigEnvVariables {
   CANONICAL_DOMAIN = "CANONICAL_DOMAIN",
   PRODUCT_TYPE = "PRODUCT_TYPE",
   ENCITED_INTERNAL_KEY = "ENCITED_INTERNAL_KEY",
+  OUTPUT_DIR = "OUTPUT_DIR",
+  DISABLE_ASSET_CACHE = "DISABLE_ASSET_CACHE",
 }
 
 export interface PathEntry {
@@ -102,6 +104,12 @@ export interface Configuration {
   // Shared secret sent as X-Encited-Internal-Key on first-party requests so
   // the Fly proxy exempts them from per-IP rate limiting
   internalKey?: string;
+  // When set, each run writes its snapshots into a timestamped subdirectory
+  // of this path (local testing; execute-on-local.sh bind-mounts it)
+  outputDir?: string;
+  // Disables the job-wide asset cache, so every render fetches all assets
+  // from the origin — for A/B-measuring the cache's effect locally
+  disableAssetCache: boolean;
 }
 
 export function loadConfig(): Configuration {
@@ -260,6 +268,16 @@ export function loadConfig(): Configuration {
   const internalKey =
     process.env[ConfigEnvVariables.ENCITED_INTERNAL_KEY] || undefined;
 
+  // Output directory is optional; when unset, snapshots aren't written to disk
+  const outputDir = process.env[ConfigEnvVariables.OUTPUT_DIR] || undefined;
+
+  // Whether to disable the asset cache is optional, default to false if not set
+  const disableAssetCacheRaw =
+    process.env[ConfigEnvVariables.DISABLE_ASSET_CACHE]?.toLowerCase();
+  const disableAssetCache = disableAssetCacheRaw
+    ? disableAssetCacheRaw === "true"
+    : false;
+
   return {
     batchId,
     userId,
@@ -288,5 +306,7 @@ export function loadConfig(): Configuration {
     retryOptions,
     productType,
     internalKey,
+    outputDir,
+    disableAssetCache,
   };
 }

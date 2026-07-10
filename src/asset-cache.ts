@@ -30,6 +30,10 @@ export type AssetCacheStats = {
   entryCount: number;
   storedBytes: number;
   hits: number;
+  // Cacheable asset requests that had to go to the origin (first fetch of
+  // each asset, plus anything that never became cacheable — non-200s, size
+  // caps). hits / (hits + misses) is the cache hit rate.
+  misses: number;
   servedBytes: number;
   skippedEntries: number;
 };
@@ -41,6 +45,7 @@ export class AssetCache {
   private readonly _logger: AppLogger;
   private _storedBytes = 0;
   private _hits = 0;
+  private _misses = 0;
   private _servedBytes = 0;
   private _skippedEntries = 0;
   private _capWarned = false;
@@ -75,6 +80,13 @@ export class AssetCache {
     return this._entries.has(url);
   }
 
+  // Called by the render engine when a cacheable asset request misses the
+  // cache and goes out to the origin. get() can't count this itself — it's
+  // probed for every GET (documents, xhr), not just cacheable assets.
+  countMiss(): void {
+    this._misses++;
+  }
+
   put(url: string, asset: CachedAsset): void {
     if (this._entries.has(url)) {
       return;
@@ -102,6 +114,7 @@ export class AssetCache {
       entryCount: this._entries.size,
       storedBytes: this._storedBytes,
       hits: this._hits,
+      misses: this._misses,
       servedBytes: this._servedBytes,
       skippedEntries: this._skippedEntries,
     };

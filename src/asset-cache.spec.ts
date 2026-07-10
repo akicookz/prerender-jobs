@@ -52,16 +52,18 @@ describe("AssetCache", () => {
     expect(cache.stats().skippedEntries).toBe(1);
   });
 
-  it("tracks hits and served bytes", () => {
+  it("tracks hits, misses, and served bytes", () => {
     const cache = AssetCache.register();
     cache.put("https://example.com/main.js", asset(100));
 
     cache.get("https://example.com/main.js");
     cache.get("https://example.com/main.js");
     cache.get("https://example.com/missing.js");
+    cache.countMiss();
 
     const stats = cache.stats();
     expect(stats.hits).toBe(2);
+    expect(stats.misses).toBe(1);
     expect(stats.servedBytes).toBe(200);
   });
 });

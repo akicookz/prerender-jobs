@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { uniq } from "es-toolkit";
 import { backOff } from "exponential-backoff";
 import { DateTime } from "luxon";
@@ -18,6 +20,7 @@ import {
 import { loadConfig, type Configuration } from "./load-config";
 import { AppLogger, INDENT } from "./logger";
 import { RenderEngine, type RenderResult } from "./render-engine";
+import { RequestStats } from "./request-stats";
 import { SeoAnalyzer } from "./seo-analyzer/index";
 import type { PageSeoAnalysis } from "./seo-analyzer/type";
 import { SitemapParser } from "./sitemap-parser";
@@ -41,6 +44,8 @@ interface PipelineResult {
   isAnalyzed: boolean;
   isCachedToR2: boolean;
   isCachedToKv: boolean;
+  /** Wall-clock of the successful render attempt, from RenderDiagnostics. */
+  renderDurationMs?: number;
   /** Why the path failed — unset on success. */
   failure?: PrerenderFailureDetail;
   payloadForKv?: {
@@ -401,13 +406,17 @@ async function runPipeline({
   config,
   browser,
   assetCache,
+  requestStats,
+  snapshotDir,
 }: {
   pipelineNumber: number;
   urlToRender: string;
   cacheTtl: number;
   config: Configuration;
   browser: Browser;
-  assetCache: AssetCache;
+  assetCache: AssetCache | null;
+  requestStats: RequestStats;
+  snapshotDir: string | null;
 }): Promise<PipelineResult> {
   const path = extractPathFromUrl(urlToRender);
   const result: PipelineResult = {
@@ -443,7 +452,8 @@ async function runPipeline({
       // those requests need the key too.
       internalKeyHosts: [config.domain, config.canonicalDomain],
       extendedStability: attempt > 1,
-      assetCache,
+      assetCache: assetCache ?? undefined,
+      requestStats,
     });
 
     try {
@@ -519,6 +529,7 @@ async function runPipeline({
     );
   }
   result.isRendered = true;
+  result.renderDurationMs = renderResult.diagnostics?.durationMs;
 
   // Detect SEO metadata lost during sanitization. Both inputs carry the same
   // placeholders, so property-presence comparisons stay accurate.
@@ -563,6 +574,22 @@ async function runPipeline({
 
   // Restore the stashed data URLs into the final HTML before persistence.
   const finalSanitizedHtml = restoreDataUrls(sanitizedHtml, dataUrlMap);
+
+  if (snapshotDir) {
+    // Local testing aid: mirror the snapshot that would be persisted into the
+    // per-run output directory. Never fails the pipeline.
+    const fileName =
+      (path.replace(/^\//, "").replace(/[^a-zA-Z0-9._-]+/g, "_") || "index") +
+      ".html";
+    try {
+      await writeFile(join(snapshotDir, fileName), finalSanitizedHtml);
+      logger.info(
+        `${INDENT}${INDENT}↳ ${path} - snapshot written to ${join(snapshotDir, fileName)}`,
+      );
+    } catch (e) {
+      logger.warn(`${INDENT}${INDENT}↳ ${path} - failed to write snapshot`, e);
+    }
+  }
 
   // Skip caching if SKIP_CACHE_SYNC is true
   if (config.skipCacheSync) {
@@ -626,8 +653,28 @@ async function runPipelineStreams({
 
   // One asset cache for the whole job (all streams render the same site):
   // each unique bundle/stylesheet/font is fetched from the customer's origin
-  // once, then served from memory on every later render.
-  const assetCache = AssetCache.register();
+  // once, then served from memory on every later render. DISABLE_ASSET_CACHE
+  // turns it off to A/B-measure its effect.
+  const assetCache = config.disableAssetCache ? null : AssetCache.register();
+  if (!assetCache) {
+    logger.info(`[AssetCache] Disabled via DISABLE_ASSET_CACHE`);
+  }
+  const requestStats = RequestStats.register();
+
+  let snapshotDir: string | null = null;
+  if (config.outputDir) {
+    snapshotDir = join(
+      config.outputDir,
+      `run-${DateTime.now().toFormat("yyyyLLdd-HHmmss")}`,
+    );
+    try {
+      await mkdir(snapshotDir, { recursive: true });
+      logger.info(`Writing snapshots to ${snapshotDir}`);
+    } catch (e) {
+      logger.error(`Failed to create snapshot directory ${snapshotDir}`, e);
+      snapshotDir = null;
+    }
+  }
 
   // Recycle each stream's browser periodically so long runs don't accumulate
   // Chromium memory bloat.
@@ -724,6 +771,8 @@ async function runPipelineStreams({
             config,
             browser,
             assetCache,
+            requestStats,
+            snapshotDir,
           }),
         );
       } catch (e) {
@@ -753,12 +802,36 @@ async function runPipelineStreams({
     );
     logger.info(`[Browser] All stream browsers closed`);
 
-    const cacheStats = assetCache.stats();
-    const toMb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
+    logger.info(`[Summary] Render durations:`);
+    for (const r of pipelineResults) {
+      const duration =
+        r.renderDurationMs !== undefined
+          ? `${(r.renderDurationMs / 1000).toFixed(1)}s`
+          : `failed (${r.failure?.reason ?? "unknown"})`;
+      logger.info(
+        `${INDENT}${extractPathFromUrl(r.url)} — ${duration}`,
+      );
+    }
+
+    const reqStats = requestStats.stats();
     logger.info(
-      `[AssetCache] ${cacheStats.hits} asset requests served from memory (${toMb(cacheStats.servedBytes)} MB kept off origin); ` +
-        `${cacheStats.entryCount} unique assets cached (${toMb(cacheStats.storedBytes)} MB stored, ${cacheStats.skippedEntries} skipped by size caps)`,
+      `[Summary] Outbound requests: ${reqStats.originRequests} to customer origin, ` +
+        `${reqStats.thirdPartyRequests} to third parties, ${reqStats.blockedRequests} image/media blocked`,
     );
+
+    if (assetCache) {
+      const cacheStats = assetCache.stats();
+      const toMb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
+      const cacheableTotal = cacheStats.hits + cacheStats.misses;
+      const hitRate =
+        cacheableTotal > 0
+          ? ((cacheStats.hits / cacheableTotal) * 100).toFixed(1)
+          : "0.0";
+      logger.info(
+        `[AssetCache] ${cacheStats.hits}/${cacheableTotal} cacheable asset requests served from memory (${hitRate}%, ${toMb(cacheStats.servedBytes)} MB kept off origin); ` +
+          `${cacheStats.entryCount} unique assets cached (${toMb(cacheStats.storedBytes)} MB stored, ${cacheStats.skippedEntries} skipped by size caps)`,
+      );
+    }
   }
 
   const resultMap = new Map<string, PipelineResult>();

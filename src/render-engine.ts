@@ -7,6 +7,7 @@ import {
 } from "puppeteer-core";
 import { getHostname } from "tldts";
 import { AssetCache } from "./asset-cache";
+import { RequestStats } from "./request-stats";
 import { AppLogger } from "./logger";
 import { RenderTracer } from "./render-tracer";
 import { RenderFailureError } from "./prerender-failure";
@@ -135,6 +136,7 @@ export class RenderEngine {
   private readonly _internalKeyHosts: Set<string>;
   private readonly _stabilityMultiplier: number;
   private readonly _assetCache: AssetCache | null;
+  private readonly _requestStats: RequestStats | null;
   private readonly _logger: AppLogger;
 
   static register({
@@ -145,6 +147,7 @@ export class RenderEngine {
     internalKeyHosts,
     extendedStability,
     assetCache,
+    requestStats,
   }: {
     targetUrl: string;
     browser: Browser;
@@ -157,6 +160,8 @@ export class RenderEngine {
     // Job-wide cache of the site's static assets; repeat requests are
     // answered from memory instead of re-hitting the customer's origin.
     assetCache?: AssetCache;
+    // Job-wide tally of outbound/blocked requests for the end-of-run summary.
+    requestStats?: RequestStats;
   }) {
     return new RenderEngine(
       targetUrl,
@@ -166,6 +171,7 @@ export class RenderEngine {
       internalKeyHosts ?? [],
       extendedStability ?? false,
       assetCache ?? null,
+      requestStats ?? null,
     );
   }
 
@@ -177,6 +183,7 @@ export class RenderEngine {
     internalKeyHosts: string[],
     extendedStability: boolean,
     assetCache: AssetCache | null,
+    requestStats: RequestStats | null,
   ) {
     this._url = targetUrl;
     this._targetHost = getHostname(targetUrl) ?? "";
@@ -184,6 +191,7 @@ export class RenderEngine {
     this._userAgent = userAgent.trim();
     this._internalKey = internalKey;
     this._assetCache = assetCache;
+    this._requestStats = requestStats;
     // Cover both apex and www forms so requests to either routing hostname
     // carry the key.
     this._internalKeyHosts = new Set(
@@ -428,6 +436,7 @@ export class RenderEngine {
       // these aborts out of the failed-request diagnostics.
       const resourceType = req.resourceType() as unknown as string;
       if (resourceType === "image" || resourceType === "media") {
+        this._requestStats?.countBlocked();
         req.abort("blockedbyclient").catch(() => void 0);
         return;
       }
@@ -462,6 +471,19 @@ export class RenderEngine {
         (reqHost === targetHost || this._internalKeyHosts.has(reqHost))
       ) {
         headers[ENCITED_INTERNAL_KEY_HEADER] = this._internalKey;
+      }
+      const isCustomerHost =
+        reqHost === targetHost || this._internalKeyHosts.has(reqHost);
+      this._requestStats?.countOutbound({ isCustomerHost });
+      // Reaching here with a cacheable asset means the cache was probed above
+      // and missed — count it so the hit-rate denominator is honest.
+      if (
+        this._assetCache &&
+        isCustomerHost &&
+        req.method() === "GET" &&
+        CACHEABLE_ASSET_TYPES.has(resourceType)
+      ) {
+        this._assetCache.countMiss();
       }
       req.continue({ headers }).catch(() => {
         // If continue fails (e.g. request already handled), ignore
