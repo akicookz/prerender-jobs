@@ -4,6 +4,7 @@ import { DateTime } from "luxon";
 import * as TelegramBot from "node-telegram-bot-api";
 import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
+import { AssetCache } from "./asset-cache";
 import { buildKvKey, stripTrackingParams } from "./cache-manager/kv-key-utils";
 import { KvLoader } from "./cache-manager/kv-loader";
 import { R2Loader } from "./cache-manager/r2-loader";
@@ -399,12 +400,14 @@ async function runPipeline({
   cacheTtl,
   config,
   browser,
+  assetCache,
 }: {
   pipelineNumber: number;
   urlToRender: string;
   cacheTtl: number;
   config: Configuration;
   browser: Browser;
+  assetCache: AssetCache;
 }): Promise<PipelineResult> {
   const path = extractPathFromUrl(urlToRender);
   const result: PipelineResult = {
@@ -440,6 +443,7 @@ async function runPipeline({
       // those requests need the key too.
       internalKeyHosts: [config.domain, config.canonicalDomain],
       extendedStability: attempt > 1,
+      assetCache,
     });
 
     try {
@@ -620,6 +624,11 @@ async function runPipelineStreams({
     logger.info(`${INDENT}↳ SKIPPING CACHING: SKIP_CACHE_SYNC is true`);
   }
 
+  // One asset cache for the whole job (all streams render the same site):
+  // each unique bundle/stylesheet/font is fetched from the customer's origin
+  // once, then served from memory on every later render.
+  const assetCache = AssetCache.register();
+
   // Recycle each stream's browser periodically so long runs don't accumulate
   // Chromium memory bloat.
   const REFRESH_EVERY_RENDERS = 20;
@@ -714,6 +723,7 @@ async function runPipelineStreams({
             cacheTtl,
             config,
             browser,
+            assetCache,
           }),
         );
       } catch (e) {
@@ -742,6 +752,13 @@ async function runPipelineStreams({
       browsers.map((b) => (b ? b.close().catch(() => {}) : Promise.resolve())),
     );
     logger.info(`[Browser] All stream browsers closed`);
+
+    const cacheStats = assetCache.stats();
+    const toMb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
+    logger.info(
+      `[AssetCache] ${cacheStats.hits} asset requests served from memory (${toMb(cacheStats.servedBytes)} MB kept off origin); ` +
+        `${cacheStats.entryCount} unique assets cached (${toMb(cacheStats.storedBytes)} MB stored, ${cacheStats.skippedEntries} skipped by size caps)`,
+    );
   }
 
   const resultMap = new Map<string, PipelineResult>();

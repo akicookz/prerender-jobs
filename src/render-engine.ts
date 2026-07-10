@@ -1,5 +1,12 @@
-import { Browser, ConsoleMessage, HTTPRequest, Page } from "puppeteer-core";
+import {
+  Browser,
+  ConsoleMessage,
+  HTTPRequest,
+  HTTPResponse,
+  Page,
+} from "puppeteer-core";
 import { getHostname } from "tldts";
+import { AssetCache } from "./asset-cache";
 import { AppLogger } from "./logger";
 import { RenderTracer } from "./render-tracer";
 import { RenderFailureError } from "./prerender-failure";
@@ -12,6 +19,11 @@ const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 const ENCITED_INTERNAL_KEY_HEADER = "x-encited-internal-key";
 const MAX_NAVIGATIONS = 10;
 const MAX_RENDER_ATTEMPTS = 2;
+// Static asset types eligible for the job-wide AssetCache. Documents and
+// xhr/fetch responses must never be cached — snapshots would capture stale
+// data. Images aren't listed because they're blocked outright (see the
+// request handler).
+const CACHEABLE_ASSET_TYPES = new Set(["script", "stylesheet", "font"]);
 // Cap diagnostics lists so a pathological page (e.g. an ad script erroring in a
 // loop) can't grow them unbounded.
 const DIAG_MAX_ENTRIES = 50;
@@ -116,11 +128,13 @@ type ReadinessState = {
 
 export class RenderEngine {
   private readonly _url: string;
+  private readonly _targetHost: string;
   private readonly _browser: Browser;
   private readonly _userAgent: string;
   private readonly _internalKey: string | null;
   private readonly _internalKeyHosts: Set<string>;
   private readonly _stabilityMultiplier: number;
+  private readonly _assetCache: AssetCache | null;
   private readonly _logger: AppLogger;
 
   static register({
@@ -130,6 +144,7 @@ export class RenderEngine {
     internalKey,
     internalKeyHosts,
     extendedStability,
+    assetCache,
   }: {
     targetUrl: string;
     browser: Browser;
@@ -139,6 +154,9 @@ export class RenderEngine {
     // Widens the readiness quiet/stable windows 4x. Used when retrying a
     // render whose first attempt produced a loading-shell snapshot.
     extendedStability?: boolean;
+    // Job-wide cache of the site's static assets; repeat requests are
+    // answered from memory instead of re-hitting the customer's origin.
+    assetCache?: AssetCache;
   }) {
     return new RenderEngine(
       targetUrl,
@@ -147,6 +165,7 @@ export class RenderEngine {
       internalKey ?? null,
       internalKeyHosts ?? [],
       extendedStability ?? false,
+      assetCache ?? null,
     );
   }
 
@@ -157,11 +176,14 @@ export class RenderEngine {
     internalKey: string | null,
     internalKeyHosts: string[],
     extendedStability: boolean,
+    assetCache: AssetCache | null,
   ) {
     this._url = targetUrl;
+    this._targetHost = getHostname(targetUrl) ?? "";
     this._browser = browser;
     this._userAgent = userAgent.trim();
     this._internalKey = internalKey;
+    this._assetCache = assetCache;
     // Cover both apex and www forms so requests to either routing hostname
     // carry the key.
     this._internalKeyHosts = new Set(
@@ -287,9 +309,11 @@ export class RenderEngine {
       page.on("requestfailed", (req: HTTPRequest) => {
         try {
           const errorText = req.failure()?.errorText || "";
-          // Skip non-critical failures (fonts, ORB blocks, analytics)
+          // Skip non-critical failures (fonts, ORB blocks, analytics) and our
+          // own deliberate image/media blocks (ERR_BLOCKED_BY_CLIENT).
           if (
             errorText.includes("ERR_BLOCKED_BY_ORB") ||
+            errorText.includes("ERR_BLOCKED_BY_CLIENT") ||
             errorText.includes("ERR_ABORTED") ||
             req.url().includes("fonts.googleapis.com") ||
             req.url().includes("fonts.gstatic.com") ||
@@ -363,7 +387,7 @@ export class RenderEngine {
 
     // Intercept requests to add the internal header only to same-origin requests,
     // avoiding CORS preflight failures on third-party domains.
-    const targetHost = getHostname(this._url) ?? "";
+    const targetHost = this._targetHost;
     await page.setRequestInterception(true);
 
     // Detect navigation loops (e.g., infinite redirect between routes)
@@ -397,6 +421,36 @@ export class RenderEngine {
       } catch {
         return;
       }
+
+      // The snapshot is HTML, not pixels — image/media downloads only add
+      // load on the customer's origin. The <img>/<video> tags still land in
+      // the snapshot; only the binary fetch is skipped. blockedbyclient keeps
+      // these aborts out of the failed-request diagnostics.
+      const resourceType = req.resourceType() as unknown as string;
+      if (resourceType === "image" || resourceType === "media") {
+        req.abort("blockedbyclient").catch(() => void 0);
+        return;
+      }
+
+      // Serve repeat static-asset requests from the job-wide cache so each
+      // bundle/stylesheet/font hits the origin once per job, not once per
+      // render. Cache-served requests never reach the network, so they skip
+      // the pending-request tracking below.
+      if (this._assetCache && req.method() === "GET") {
+        const cached = this._assetCache.get(req.url());
+        if (cached) {
+          req
+            .respond({
+              status: 200,
+              contentType: cached.contentType,
+              headers: cached.corsHeaders,
+              body: cached.body,
+            })
+            .catch(() => void 0);
+          return;
+        }
+      }
+
       // Add the internal prerender header only to same-origin requests
       const reqHost = url.hostname;
       const headers = req.headers();
@@ -440,6 +494,12 @@ export class RenderEngine {
     };
     page.on("requestfinished", settle);
     page.on("requestfailed", settle);
+
+    if (this._assetCache) {
+      page.on("response", (res: HTTPResponse) => {
+        this.maybeCacheAsset(res).catch(() => void 0);
+      });
+    }
 
     const navStartTimestamp = Date.now();
     this._logger.debug(`[Prerender] Navigating to ${this._url}`);
@@ -523,6 +583,56 @@ export class RenderEngine {
     };
   }
 
+  private async maybeCacheAsset(res: HTTPResponse): Promise<void> {
+    const cache = this._assetCache;
+    if (!cache) {
+      return;
+    }
+    const req = res.request();
+    const url = req.url();
+    if (req.method() !== "GET" || cache.has(url)) {
+      return;
+    }
+    if (!CACHEABLE_ASSET_TYPES.has(req.resourceType() as unknown as string)) {
+      return;
+    }
+    // Only complete 200 bodies — redirects, 304s and partial responses can't
+    // be replayed. Service-worker-mediated bodies are skipped because the
+    // worker may have rewritten them.
+    if (res.status() !== 200 || res.fromServiceWorker()) {
+      return;
+    }
+    // Cache only the customer's own hosts — that's whose origin we're
+    // protecting, and it bounds the cache to one site's asset set.
+    const host = getHostname(url);
+    if (
+      !host ||
+      (host !== this._targetHost && !this._internalKeyHosts.has(host))
+    ) {
+      return;
+    }
+    const body = await res.buffer().catch(() => null);
+    if (!body || body.length === 0) {
+      return;
+    }
+    const resHeaders = res.headers();
+    const corsHeaders: Record<string, string> = {};
+    for (const name of [
+      "access-control-allow-origin",
+      "access-control-allow-credentials",
+    ]) {
+      const value = resHeaders[name];
+      if (value) {
+        corsHeaders[name] = value;
+      }
+    }
+    cache.put(url, {
+      body,
+      contentType: resHeaders["content-type"] ?? "application/octet-stream",
+      corsHeaders,
+    });
+  }
+
   private shouldTrackReq({
     req,
     targetHost,
@@ -532,13 +642,14 @@ export class RenderEngine {
     targetHost: string;
     path: string;
   }): boolean {
+    // "image" is intentionally absent — image requests are aborted at the
+    // interception layer and never reach the network.
     const trackResourceTypes = new Set([
       "document",
       "script",
       "xhr",
       "fetch",
       "stylesheet",
-      "image",
     ]);
     try {
       const host = getHostname(req.url());
