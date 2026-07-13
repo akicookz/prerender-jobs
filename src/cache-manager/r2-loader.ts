@@ -198,7 +198,9 @@ export class R2Loader {
       // SEO analysis metrics
       seoStatusCode: String(this._seoAnalysis.statusCode),
       seoIndexable: String(this._seoAnalysis.indexable),
-      seoIsSoft404: String(this._seoAnalysis.isSoft404),
+      seoSoft404Status: this._seoAnalysis.isSoft404
+        ? String(this._seoAnalysis.soft404StatusCode ?? 404)
+        : "",
       seoWordCount: String(this._seoAnalysis.wordCount),
       seoHasOgTags: String(this._seoAnalysis.hasOgTags),
       seoHasTwitterTags: String(this._seoAnalysis.hasTwitterTags),

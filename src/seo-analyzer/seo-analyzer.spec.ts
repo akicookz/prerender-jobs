@@ -17,6 +17,7 @@ function buildHtml({
   ogImage,
   twitterCard,
   twitterTitle,
+  headExtra,
   body = "",
 }: {
   title?: string;
@@ -30,6 +31,7 @@ function buildHtml({
   ogImage?: string;
   twitterCard?: string;
   twitterTitle?: string;
+  headExtra?: string;
   body?: string;
 }): string {
   const head = [
@@ -47,6 +49,7 @@ function buildHtml({
     ogImage ? `<meta property="og:image" content="${ogImage}">` : "",
     twitterCard ? `<meta name="twitter:card" content="${twitterCard}">` : "",
     twitterTitle ? `<meta name="twitter:title" content="${twitterTitle}">` : "",
+    headExtra ?? "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -84,15 +87,26 @@ function analyze(
 // ---------------------------------------------------------------------------
 
 describe("SeoAnalyzer.register()", () => {
-  it("throws when status code is >= 300", () => {
+  it("throws when status code is >= 400", () => {
     expect(() =>
       SeoAnalyzer.register({
         html: "<html></html>",
         url: BASE_URL,
-        statusCode: 301,
+        statusCode: 404,
         xRobotsTag: null,
       }),
     ).toThrow("Status code is not 200~299");
+  });
+
+  it("accepts 3xx status codes", () => {
+    expect(() =>
+      SeoAnalyzer.register({
+        html: "<html><body>ok</body></html>",
+        url: BASE_URL,
+        statusCode: 301,
+        xRobotsTag: null,
+      }),
+    ).not.toThrow();
   });
 
   it("throws when URL is empty", () => {
@@ -287,54 +301,96 @@ describe("analyze() – indexability", () => {
 });
 
 describe("analyze() – soft 404 detection", () => {
-  it("detects soft 404 from '404' in title", () => {
+  it("does not flag '404' in title without noindex", () => {
     const result = analyze({
       title: "404 - Page Not Found",
       body: wordsBody(400),
-    });
-    expect(result.isSoft404).toBe(true);
-  });
-
-  it("detects soft 404 from 'not found' in title", () => {
-    const result = analyze({ title: "Page Not Found", body: wordsBody(400) });
-    expect(result.isSoft404).toBe(true);
-  });
-
-  it("detects soft 404 from 'page unavailable' in title", () => {
-    const result = analyze({ title: "Page Unavailable", body: wordsBody(400) });
-    expect(result.isSoft404).toBe(true);
-  });
-
-  it("detects soft 404 for extremely thin content (< 20 words) lacking title and H1", () => {
-    const result = analyze({ body: wordsBody(15) });
-    expect(result.isSoft404).toBe(true);
-  });
-
-  it("does not flag a thin page that has both a title and an H1 (login/signup form)", () => {
-    const result = analyze({
-      title: "Log in",
-      h1s: ["Welcome back"],
-      body: wordsBody(10),
     });
     expect(result.isSoft404).toBe(false);
     expect(result.statusCode).toBe(200);
   });
 
-  it("detects soft 404 for a thin page with a title but no H1", () => {
-    const result = analyze({ title: "Some Page", body: wordsBody(10) });
-    expect(result.isSoft404).toBe(true);
-  });
-
-  it("detects soft 404 for an empty body even when a title exists", () => {
-    const result = analyze({ title: "My Page", body: "" });
-    expect(result.isSoft404).toBe(true);
-  });
-
-  it("detects soft 404 for thin content (< 50 words) with 404 text in body", () => {
+  it("flags '404' in title combined with a noindex robots meta", () => {
     const result = analyze({
-      body: "Sorry we could not find the page you were looking for",
+      title: "404 - Page Not Found",
+      robotsMeta: "noindex",
+      body: wordsBody(400),
     });
     expect(result.isSoft404).toBe(true);
+    expect(result.soft404Reason).toBe("noindex_with_404_text");
+    expect(result.soft404StatusCode).toBe(404);
+    expect(result.statusCode).toBe(404);
+  });
+
+  it("flags 404 wording in the body combined with noindex", () => {
+    const result = analyze({
+      title: "Example",
+      robotsMeta: "noindex",
+      body: `${wordsBody(100)} <p>Sorry, page not found.</p>`,
+    });
+    expect(result.isSoft404).toBe(true);
+  });
+
+  it("flags entity-encoded curly-apostrophe wording combined with noindex", () => {
+    const result = analyze({
+      title: "Example",
+      robotsMeta: "noindex",
+      body: `${wordsBody(100)} <p>Sorry, this page doesn&#8217;t exist.</p>`,
+    });
+    expect(result.isSoft404).toBe(true);
+  });
+
+  it("flags googlebot noindex combined with 404 wording", () => {
+    const result = analyze({
+      title: "Page Not Found",
+      headExtra: `<meta name="googlebot" content="noindex">`,
+      body: wordsBody(400),
+    });
+    expect(result.isSoft404).toBe(true);
+  });
+
+  it("does not flag noindex without 404 wording", () => {
+    const result = analyze({
+      title: "Admin login",
+      robotsMeta: "noindex",
+      body: wordsBody(30),
+    });
+    expect(result.isSoft404).toBe(false);
+  });
+
+  it("does not flag thin or empty content on its own", () => {
+    expect(analyze({ body: wordsBody(15) }).isSoft404).toBe(false);
+    expect(analyze({ title: "My Page", body: "" }).isSoft404).toBe(false);
+  });
+
+  it("does not treat robots 'none' as noindex", () => {
+    const result = analyze({
+      title: "Page Not Found",
+      robotsMeta: "none",
+      body: wordsBody(400),
+    });
+    expect(result.isSoft404).toBe(false);
+  });
+
+  it("flags a prerender-status-code hint and forwards 410", () => {
+    const result = analyze({
+      title: "Gone",
+      headExtra: `<meta name="prerender-status-code" content="410">`,
+      body: wordsBody(400),
+    });
+    expect(result.isSoft404).toBe(true);
+    expect(result.soft404Reason).toBe("status_code_hint");
+    expect(result.soft404StatusCode).toBe(410);
+    expect(result.statusCode).toBe(410);
+  });
+
+  it("ignores bogus prerender-status-code values", () => {
+    const result = analyze({
+      title: "Example",
+      headExtra: `<meta name="prerender-status-code" content="301">`,
+      body: wordsBody(400),
+    });
+    expect(result.isSoft404).toBe(false);
   });
 
   it("returns isSoft404=false for normal content with a valid title", () => {
@@ -343,6 +399,7 @@ describe("analyze() – soft 404 detection", () => {
       body: wordsBody(400),
     });
     expect(result.isSoft404).toBe(false);
+    expect(result.statusCode).toBe(200);
   });
 });
 

@@ -17,6 +17,7 @@ import {
   extractOversizedDataUrls,
   restoreDataUrls,
 } from "./html-sanitizer";
+import { looksLikeFailedRender } from "./html-sanitizer/soft-404";
 import { loadConfig, type Configuration } from "./load-config";
 import { AppLogger, INDENT } from "./logger";
 import { RenderEngine, type RenderResult } from "./render-engine";
@@ -429,11 +430,13 @@ async function runPipeline({
   };
   logger.info(`[${pipelineNumber}] Processing ${urlToRender}`);
 
-  // A soft-404 result usually means the snapshot caught the SPA's loading
+  // A near-empty render usually means the snapshot caught the SPA's loading
   // shell (readiness heuristics can fire while a starved renderer still holds
   // the route's Suspense fallback). Retry once with widened stability
   // windows; if the content is still thin after that, cache it as-is — the
-  // page may just be genuinely minimal.
+  // page may just be genuinely minimal. This is a render-quality signal only;
+  // the soft-404 verdict (noindex + wording, or the status-code hint) is
+  // computed separately and never triggers a retry.
   const MAX_CONTENT_ATTEMPTS = 2;
   let renderResult: RenderResult | null = null;
   let preparedHtml = "";
@@ -510,12 +513,18 @@ async function runPipeline({
       return result;
     }
 
-    if (!seoAnalysisResult.isSoft404) {
+    if (
+      !looksLikeFailedRender({
+        title: seoAnalysisResult.title,
+        wordCount: seoAnalysisResult.wordCount,
+        h1Count: seoAnalysisResult.h1Count,
+      })
+    ) {
       break;
     }
     if (attempt < MAX_CONTENT_ATTEMPTS) {
       logger.warn(
-        `${INDENT}${INDENT}↳ ${path} - soft-404 content (${seoAnalysisResult.wordCount} words), retrying with extended stability windows`,
+        `${INDENT}${INDENT}↳ ${path} - thin render (${seoAnalysisResult.wordCount} words), retrying with extended stability windows`,
       );
     }
   }
@@ -523,9 +532,15 @@ async function runPipeline({
   if (!renderResult || !seoAnalysisResult) {
     return result;
   }
-  if (seoAnalysisResult.isSoft404) {
+  if (
+    looksLikeFailedRender({
+      title: seoAnalysisResult.title,
+      wordCount: seoAnalysisResult.wordCount,
+      h1Count: seoAnalysisResult.h1Count,
+    })
+  ) {
     logger.warn(
-      `${INDENT}${INDENT}↳ ${path} - soft-404 content persisted after retry (${seoAnalysisResult.wordCount} words), caching as-is`,
+      `${INDENT}${INDENT}↳ ${path} - thin render persisted after retry (${seoAnalysisResult.wordCount} words), caching as-is`,
     );
   }
   result.isRendered = true;
