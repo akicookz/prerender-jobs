@@ -95,7 +95,7 @@ describe("SeoAnalyzer.register()", () => {
         statusCode: 404,
         xRobotsTag: null,
       }),
-    ).toThrow("Status code is not 200~299");
+    ).toThrow("Status code is not 200~399");
   });
 
   it("accepts 3xx status codes", () => {

@@ -25,7 +25,7 @@ export class SeoAnalyzer {
     xRobotsTag: string | null;
   }): SeoAnalyzer {
     if (statusCode >= 400) {
-      throw new Error(`Status code is not 200~299, got ${statusCode}`);
+      throw new Error(`Status code is not 200~399, got ${statusCode}`);
     }
     if (!url) {
       throw new Error("URL is required");
