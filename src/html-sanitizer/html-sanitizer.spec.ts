@@ -144,16 +144,25 @@ describe("R1: noindex removal", () => {
     expect(result).not.toContain("noindex");
   });
 
-  it("strips noindex even when marked with data-rh='true'", () => {
+  it("strips noindex with a mixed-case name like 'RoBoTs'", () => {
     const html = doc({
-      head: `<title>Hello</title><meta name="robots" content="noindex" data-rh="true">`,
+      head: `<title>Hello</title><meta name="RoBoTs" content="noindex">`,
       body: wordsBody(100),
     });
     const result = sanitize(html);
     expect(result).not.toContain("noindex");
   });
 
-  it("preserves noindex when page title contains '404' (soft 404)", () => {
+  it("preserves noindex with data-rh='true' (helmet-set, per-route intent)", () => {
+    const html = doc({
+      head: `<title>Hello</title><meta name="robots" content="noindex" data-rh="true">`,
+      body: wordsBody(100),
+    });
+    const result = sanitize(html);
+    expect(result).toContain("noindex");
+  });
+
+  it("preserves noindex when title has 404 wording (soft 404)", () => {
     const html = doc({
       head: `<title>404 - Page Not Found</title><meta name="robots" content="noindex">`,
       body: wordsBody(100),
@@ -162,31 +171,41 @@ describe("R1: noindex removal", () => {
     expect(result).toContain("noindex");
   });
 
-  it("preserves noindex when page has fewer than 20 words (thin content soft 404)", () => {
+  it("preserves noindex when a prerender-status-code hint is present", () => {
+    const html = doc({
+      head: `<title>Hello</title><meta name="prerender-status-code" content="404"><meta name="robots" content="noindex">`,
+      body: wordsBody(100),
+    });
+    const result = sanitize(html);
+    expect(result).toContain("noindex");
+    expect(result).toContain("prerender-status-code");
+  });
+
+  it("preserves googlebot noindex when the body has 404 wording", () => {
+    const html = doc({
+      head: `<title>Hello</title><meta name="googlebot" content="noindex">`,
+      body: `<h1>Page not found</h1>${wordsBody(100)}`,
+    });
+    const result = sanitize(html);
+    expect(result).toContain("noindex");
+  });
+
+  it("strips noindex on thin pages without 404 wording", () => {
     const html = doc({
       head: `<title>Some Page</title><meta name="robots" content="noindex">`,
       body: wordsBody(10),
     });
     const result = sanitize(html);
-    expect(result).toContain("noindex");
-  });
-
-  it("strips noindex on a thin page that still has a title and an H1 (login/signup form)", () => {
-    const html = doc({
-      head: `<title>Log in</title><meta name="robots" content="noindex">`,
-      body: `<h1>Welcome back</h1><p>Enter your email and password</p>`,
-    });
-    const result = sanitize(html);
     expect(result).not.toContain("noindex");
   });
 
-  it("preserves noindex on an empty body even when title and H1 rules would pass", () => {
+  it("strips noindex on an empty body without 404 wording", () => {
     const html = doc({
       head: `<title>My Page</title><meta name="robots" content="noindex">`,
       body: "",
     });
     const result = sanitize(html);
-    expect(result).toContain("noindex");
+    expect(result).not.toContain("noindex");
   });
 });
 

@@ -1,6 +1,10 @@
 import { parse, type HTMLElement } from "node-html-parser";
 import { DEFAULT_SEO_CONFIG } from "./config";
-import { detectSoft404 } from "../html-sanitizer/soft-404";
+import {
+  detectSoft404,
+  extractStatusCodeHint,
+  hasNoindexMeta,
+} from "../html-sanitizer/soft-404";
 import type { MetaTags, OgTags, PageSeoAnalysis } from "./type";
 
 export class SeoAnalyzer {
@@ -21,7 +25,7 @@ export class SeoAnalyzer {
     xRobotsTag: string | null;
   }): SeoAnalyzer {
     if (statusCode >= 400) {
-      throw new Error(`Status code is not 200~299, got ${statusCode}`);
+      throw new Error(`Status code is not 200~399, got ${statusCode}`);
     }
     if (!url) {
       throw new Error("URL is required");
@@ -65,16 +69,17 @@ export class SeoAnalyzer {
     // -------------------------------------------------------------------------
     // Soft 404 detection
     // -------------------------------------------------------------------------
-    const isSoft404 = detectSoft404({
+    const soft404 = detectSoft404({
+      statusCode: this._statusCode,
       title: metaTags.title,
       bodyText,
-      wordCount,
-      h1Count: h1Tags.length,
+      hasNoindex: hasNoindexMeta(this._html),
+      statusCodeHint: extractStatusCodeHint(this._html),
     });
 
     let finalStatusCode = 200;
-    if (isSoft404) {
-      finalStatusCode = 404;
+    if (soft404.isSoft404) {
+      finalStatusCode = soft404.statusCode ?? 404;
     }
 
     // -------------------------------------------------------------------------
@@ -83,7 +88,9 @@ export class SeoAnalyzer {
     return {
       statusCode: finalStatusCode,
       indexable,
-      isSoft404,
+      isSoft404: soft404.isSoft404,
+      soft404Reason: soft404.reason,
+      soft404StatusCode: soft404.statusCode,
 
       title: metaTags.title,
       titleLength: metaTags.titleLength,
@@ -328,6 +335,7 @@ export class SeoAnalyzer {
       .replace(/&quot;/gi, '"')
       .replace(/&#39;/gi, "'")
       .replace(/&#x27;/gi, "'")
+      .replace(/&#8217;|&#x2019;|&rsquo;/gi, "’")
       .replace(/&#x2F;/gi, "/");
 
     // Normalize whitespace

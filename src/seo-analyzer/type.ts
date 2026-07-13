@@ -43,10 +43,9 @@ export type IndexableReason =
   | "status_4xx"
   | "status_5xx";
 
-export type Soft404Reason =
-  | "title_indicates_404"
-  | "thin_content_with_404_text"
-  | "extremely_thin_content";
+import type { Soft404Reason } from "../html-sanitizer/soft-404";
+
+export type { Soft404Reason };
 
 export type PageSeoAnalysis = {
   // Response data
@@ -59,6 +58,7 @@ export type PageSeoAnalysis = {
   // Soft 404 detection
   isSoft404: boolean;
   soft404Reason?: Soft404Reason;
+  soft404StatusCode?: number;
 
   // Title
   title?: string;

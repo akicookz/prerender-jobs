@@ -1,6 +1,10 @@
 import { Node, NodeType, parse, type HTMLElement } from "node-html-parser";
 import type { SanitizeOptions } from "./type";
-import { detectSoft404 } from "./soft-404";
+import {
+  detectSoft404,
+  extractStatusCodeHint,
+  hasNoindexMeta,
+} from "./soft-404";
 import * as beautifier from "js-beautify";
 
 /** Internal query params injected by the prerender system that must be stripped */
@@ -64,14 +68,18 @@ export function sanitizeHtml({
   const titleEl = head?.querySelector("title") ?? null;
   const titleText = titleEl?.textContent ?? undefined;
   const bodyText = extractBodyText(root);
-  const wordCount = countWords(bodyText);
-  const h1Count = root.querySelectorAll("h1").length;
 
-  const isSoft404 = detectSoft404({
+  // The sanitizer never sees the origin status; pass 200 so the shared
+  // detector evaluates content signals. Must stay in sync with the
+  // SeoAnalyzer verdict, which runs on the sanitized output — if this
+  // says "not a soft 404" the noindex metas are stripped below and the
+  // analyzer can't flag it either.
+  const { isSoft404 } = detectSoft404({
+    statusCode: 200,
     title: titleText,
     bodyText,
-    wordCount,
-    h1Count,
+    hasNoindex: hasNoindexMeta(html),
+    statusCodeHint: extractStatusCodeHint(html),
   });
 
   let canonicalUrl: string | null = null;
@@ -255,42 +263,30 @@ function extractBodyText(root: HTMLElement): string {
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
     .replace(/&#39;|&#x27;/gi, "'")
+    .replace(/&#8217;|&#x2019;|&rsquo;/gi, "’")
     .replace(/&#x2F;/gi, "/");
   // Normalize whitespace
   content = content.replace(/\s+/g, " ").trim();
   return content;
 }
 
-/** Count words in a text string */
-function countWords(text: string): number {
-  if (!text.trim()) return 0;
-  return text.trim().split(/\s+/).length;
-}
-
 // -- R1 --
 
 function removeNoindexTags(head: HTMLElement, isSoft404: boolean): void {
-  const selectors = [
-    'meta[name="robots"]',
-    'meta[name="googlebot"]',
-    // Case-insensitive fallbacks
-    'meta[name="Robots"]',
-    'meta[name="ROBOTS"]',
-    'meta[name="Googlebot"]',
-    'meta[name="GOOGLEBOT"]',
-  ];
+  // Soft 404 pages keep their noindex tags
+  if (isSoft404) return;
 
-  for (const selector of selectors) {
-    const elements = head.querySelectorAll(selector);
-    for (const el of elements) {
-      const content = el.getAttribute("content") ?? "";
-      if (!/noindex/i.test(content)) continue;
+  for (const el of head.querySelectorAll("meta")) {
+    const name = el.getAttribute("name")?.toLowerCase();
+    if (name !== "robots" && name !== "googlebot") continue;
 
-      // Exception: keep if page is detected as soft 404
-      if (isSoft404) continue;
+    const content = el.getAttribute("content") ?? "";
+    if (!/noindex/i.test(content)) continue;
 
-      el.remove();
-    }
+    // Exception: keep if explicitly set by app via react-helmet
+    if (el.getAttribute("data-rh") === "true") continue;
+
+    el.remove();
   }
 }
 
