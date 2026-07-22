@@ -16,6 +16,9 @@ const TRACKING_PARAMS = new Set([
   "twclid",
   "mc_cid",
   "mc_eid",
+  "yclid",
+  "_gl",
+  "_ga",
 ]);
 
 function isTrackingParam(name: string): boolean {
@@ -82,6 +85,7 @@ function canonicalizePathForKey({ url }: { url: URL }): string {
     "cache_invalidate",
     "to_html",
     "x-lovablehtml-render",
+    "__lh_verify", // worker VERIFY_NONCE_PARAM — keep omit-sets identical
   ]);
   // Tracking params are also omitted at the key boundary so keys written by
   // this job match the serve-path keys computed from already-stripped URLs.
