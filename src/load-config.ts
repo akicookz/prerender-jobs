@@ -21,11 +21,9 @@ enum ConfigEnvVariables {
   DOMAIN = "DOMAIN",
   ORIGIN_HOST = "ORIGIN_HOST",
   CF_ACCOUNT_ID = "CF_ACCOUNT_ID",
-  CF_API_TOKEN = "CF_API_TOKEN",
   R2_ACCESS_KEY_ID = "R2_ACCESS_KEY_ID",
   R2_SECRET_ACCESS_KEY = "R2_SECRET_ACCESS_KEY",
   R2_BUCKET_NAME = "R2_BUCKET_NAME",
-  KV_NAMESPACE_ID = "KV_NAMESPACE_ID",
 
   // OPTIONAL
   CONCURRENCY = "CONCURRENCY",
@@ -76,16 +74,12 @@ export interface Configuration {
   sitemapUpdatedWithin: LastmodFilter;
   // Cloudflare account ID
   cfAccountId: string;
-  // API token for KV
-  cfApiToken: string;
   // R2 S3 key ID
   r2AccessKeyId: string;
   // R2 S3 secret
   r2SecretAccessKey: string;
   // R2 bucket
   r2BucketName: string;
-  // KV namespace ID
-  kvNamespaceId: string;
   // User agent
   userAgent: string;
   // Concurrency
@@ -206,10 +200,6 @@ export function loadConfig(): Configuration {
   if (!cfAccountId) {
     throw new Error("CF_ACCOUNT_ID is required");
   }
-  const cfApiToken = process.env[ConfigEnvVariables.CF_API_TOKEN];
-  if (!cfApiToken) {
-    throw new Error("CF_API_TOKEN is required");
-  }
   const r2AccessKeyId = process.env[ConfigEnvVariables.R2_ACCESS_KEY_ID];
   if (!r2AccessKeyId) {
     throw new Error("R2_ACCESS_KEY_ID is required");
@@ -223,11 +213,6 @@ export function loadConfig(): Configuration {
   if (!r2BucketName) {
     throw new Error("R2_BUCKET_NAME is required");
   }
-  const kvNamespaceId = process.env[ConfigEnvVariables.KV_NAMESPACE_ID];
-  if (!kvNamespaceId) {
-    throw new Error("KV_NAMESPACE_ID is required");
-  }
-
   // User agent is optional, default to default user agent if not set
   const userAgent =
     process.env[ConfigEnvVariables.USER_AGENT] ?? DEFAULT_USER_AGENT;
@@ -292,11 +277,9 @@ export function loadConfig(): Configuration {
     sitemapUrl,
     sitemapUpdatedWithin,
     cfAccountId,
-    cfApiToken,
     r2AccessKeyId,
     r2SecretAccessKey,
     r2BucketName,
-    kvNamespaceId,
     userAgent,
     concurrency,
     skipCacheSync,

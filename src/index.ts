@@ -7,8 +7,7 @@ import * as TelegramBot from "node-telegram-bot-api";
 import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
 import { AssetCache } from "./asset-cache";
-import { buildKvKey, stripTrackingParams } from "./cache-manager/kv-key-utils";
-import { KvLoader } from "./cache-manager/kv-loader";
+import { stripTrackingParams } from "./cache-manager/kv-key-utils";
 import { R2Loader } from "./cache-manager/r2-loader";
 import { KvRecord } from "./cache-manager/type";
 import {
@@ -896,101 +895,6 @@ async function runPipelineStreams({
   return { resultMap };
 }
 
-async function bulkUpdateKv({
-  kvPairInfoMap,
-  config,
-}: {
-  kvPairInfoMap: Map<
-    string, // kv key
-    {
-      url: string;
-      kvPair: { key: string; value: string; expiration_ttl: number };
-    }
-  >;
-  config: Configuration;
-}): Promise<{
-  successfulKeyCount: number;
-  succeededUrls: string[];
-  unsuccessfulUrls: string[];
-}> {
-  let finalSuccessfulKeyCount = 0;
-  let finalUnsuccessfulKeys = [];
-  const kvLoader = KvLoader.register({
-    kvConfig: {
-      cfAccountId: config.cfAccountId,
-      cfApiToken: config.cfApiToken,
-      kvNamespaceId: config.kvNamespaceId,
-    },
-  });
-  const targetKvPairs = Array.from(kvPairInfoMap.values()).map(
-    ({ kvPair }) => kvPair,
-  );
-
-  const filteredTargetKvPairs: {
-    key: string;
-    value: string;
-    expiration_ttl: number;
-  }[] = [];
-  const KV_KEY_LENGTH_LIMIT = 512;
-  targetKvPairs.forEach((kvPair) => {
-    if (new TextEncoder().encode(kvPair.key).length > KV_KEY_LENGTH_LIMIT) {
-      logger.error(`KV key length exceeds limit: ${kvPair.key.length}`);
-      finalUnsuccessfulKeys.push(kvPair.key);
-    } else {
-      filteredTargetKvPairs.push(kvPair);
-    }
-  });
-  const kvUploadResult = await kvLoader.uploadKvRecords({
-    kvPairs: filteredTargetKvPairs,
-  });
-
-  finalSuccessfulKeyCount += kvUploadResult.successfulKeyCount;
-  finalUnsuccessfulKeys.push(...kvUploadResult.unsuccessfulKeys);
-
-  // retry after 10 seconds if unsuccessful
-  if (kvUploadResult.unsuccessfulKeys.length > 0) {
-    logger.info(
-      `Failed to upload ${kvUploadResult.unsuccessfulKeys.length} KV records. Retrying after 10 seconds ...`,
-    );
-    const kvPairsToRetry = [];
-    for (const key of kvUploadResult.unsuccessfulKeys) {
-      const kvPairInfo = kvPairInfoMap.get(key);
-      if (kvPairInfo) {
-        kvPairsToRetry.push(kvPairInfo.kvPair);
-      }
-    }
-    await sleep(10000);
-    const retryKvUploadResult = await kvLoader.uploadKvRecords({
-      kvPairs: kvPairsToRetry,
-    });
-    finalSuccessfulKeyCount += retryKvUploadResult.successfulKeyCount;
-    finalUnsuccessfulKeys = retryKvUploadResult.unsuccessfulKeys;
-  }
-
-  const succeededUrls = [];
-  const unsuccessfulUrls = [];
-  for (const [key, kvPairInfo] of kvPairInfoMap.entries()) {
-    if (finalUnsuccessfulKeys.includes(key)) {
-      unsuccessfulUrls.push(kvPairInfo.url);
-    } else {
-      succeededUrls.push(kvPairInfo.url);
-    }
-  }
-  if (unsuccessfulUrls.length > 0) {
-    logger.error(`KV sync failed for following paths:`);
-    unsuccessfulUrls.forEach((url) => {
-      logger.error(`${INDENT}${INDENT}↳ ${url}`);
-    });
-  } else {
-    logger.info(`KV sync completed successfully`);
-  }
-  return {
-    successfulKeyCount: finalSuccessfulKeyCount,
-    succeededUrls,
-    unsuccessfulUrls,
-  };
-}
-
 async function main(): Promise<void> {
   const config = getConfig();
   const startedAt = Date.now();
@@ -1036,63 +940,13 @@ async function main(): Promise<void> {
   });
 
   if (config.skipCacheSync) {
-    logger.info(`SKIPPING KV UPLOAD: SKIP_CACHE_SYNC is true`);
+    logger.info(`SKIPPING CACHE SYNC: SKIP_CACHE_SYNC is true`);
   } else {
-    const kvPairInfoMap = new Map<
-      string, // kv key
-      {
-        url: string;
-        kvPair: { key: string; value: string; expiration_ttl: number };
-      }
-    >();
-    const objectKeyMap = new Map<string, string>();
+    // KV records are no longer written; R2 at deterministic keys is the only
+    // snapshot store. A page counts as cache-synced when its R2 put landed.
     urlResultMap.forEach((result) => {
-      if (result.payloadForKv) {
-        const kvKey = buildKvKey({ targetUrl: result.url });
-        kvPairInfoMap.set(kvKey, {
-          url: result.url,
-          kvPair: {
-            key: kvKey,
-            value: JSON.stringify(result.payloadForKv.kvRecord),
-            expiration_ttl: result.cacheTtl,
-          },
-        });
-        objectKeyMap.set(kvKey, result.payloadForKv.objectKey);
-      }
+      result.isCachedToKv = !!result.payloadForKv;
     });
-
-    // STEP 4 : Invalidate stale R2 objects
-    // const cacheInvalidator = CacheInvalidator.register({
-    //   cacheConfig: {
-    //     cfAccountId: config.cfAccountId,
-    //     cfApiToken: config.cfApiToken,
-    //     r2AccessKeyId: config.r2AccessKeyId,
-    //     r2SecretAccessKey: config.r2SecretAccessKey,
-    //     r2BucketName: config.r2BucketName,
-    //     kvNamespaceId: config.kvNamespaceId,
-    //   },
-    // });
-    // await cacheInvalidator.invalidateMultipleStaleR2Objects({
-    //   kvKeyObjectKeyMap: objectKeyMap,
-    // });
-
-    // STEP 5 : Upload KV records (URL meta)
-    const { succeededUrls, unsuccessfulUrls } = await bulkUpdateKv({
-      kvPairInfoMap,
-      config,
-    });
-    for (const url of succeededUrls) {
-      const result = urlResultMap.get(url);
-      if (result) {
-        result.isCachedToKv = true;
-      }
-    }
-    for (const url of unsuccessfulUrls) {
-      const result = urlResultMap.get(url);
-      if (result) {
-        result.isCachedToKv = false;
-      }
-    }
   }
 
   const completedAt = Date.now();
