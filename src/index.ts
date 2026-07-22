@@ -69,7 +69,6 @@ interface ReportResultBody {
   sitemap_filter: string;
   started_at: string;
   finished_at: string;
-  product_type: string;
   failed: {
     failed_to_render: {
       paths: PrerenderFailedPath[];
@@ -220,7 +219,6 @@ async function reportResult({
     sitemap_filter: sitemapFilter,
     started_at: DateTime.fromMillis(startedAt).toUTC().toISO()!,
     finished_at: DateTime.fromMillis(completedAt).toUTC().toISO()!,
-    product_type: config.productType,
     failed: {
       failed_to_render: {
         paths: failedToRenderUrls.map(({ url, failure }) => ({

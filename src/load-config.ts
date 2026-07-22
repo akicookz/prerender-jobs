@@ -39,7 +39,6 @@ enum ConfigEnvVariables {
   RETRY_OPTIONS = "RETRY_OPTIONS",
   REQUEST_SOURCE = "REQUEST_SOURCE",
   CANONICAL_DOMAIN = "CANONICAL_DOMAIN",
-  PRODUCT_TYPE = "PRODUCT_TYPE",
   ENCITED_INTERNAL_KEY = "ENCITED_INTERNAL_KEY",
   OUTPUT_DIR = "OUTPUT_DIR",
   DISABLE_ASSET_CACHE = "DISABLE_ASSET_CACHE",
@@ -93,8 +92,6 @@ export interface Configuration {
   // Telegram chat ID
   telegramChatId?: string;
   retryOptions?: string;
-  // Product type
-  productType: string;
   // Shared secret sent as X-Encited-Internal-Key on first-party requests so
   // the Fly proxy exempts them from per-IP rate limiting
   internalKey?: string;
@@ -246,10 +243,6 @@ export function loadConfig(): Configuration {
   // Retry options are optional
   const retryOptions = process.env[ConfigEnvVariables.RETRY_OPTIONS];
 
-  // Product type is optional, default to "website" if not set
-  const productType =
-    process.env[ConfigEnvVariables.PRODUCT_TYPE] || "standard";
-
   const internalKey =
     process.env[ConfigEnvVariables.ENCITED_INTERNAL_KEY] || undefined;
 
@@ -287,7 +280,6 @@ export function loadConfig(): Configuration {
     telegramBotToken,
     telegramChatId,
     retryOptions,
-    productType,
     internalKey,
     outputDir,
     disableAssetCache,
