@@ -112,11 +112,27 @@ async function sha256Hex(input: string): Promise<string> {
  * The host is normalized like buildKvKey's domain segment so www-preferred
  * domains land on the same key the worker derives.
  */
+function stripTrailingSlash(targetUrl: string): string {
+  try {
+    const u = new URL(targetUrl);
+    if (u.pathname.length > 1 && u.pathname.endsWith("/")) {
+      u.pathname = u.pathname.slice(0, -1);
+      return u.toString();
+    }
+    return targetUrl;
+  } catch {
+    return targetUrl;
+  }
+}
+
 export async function buildSnapshotObjectKey({
-  targetUrl,
+  targetUrl: rawTargetUrl,
 }: {
   targetUrl: string;
 }): Promise<string> {
+  // Trailing-slash variants must collapse to one object even when a writer
+  // receives the un-normalized form (e.g. a redirect-followed final URL).
+  const targetUrl = stripTrailingSlash(rawTargetUrl);
   const url = new URL(targetUrl);
   const safeHost = normalizeDomain({ domain: url.hostname }).replace(
     /[^a-z0-9.-]/g,

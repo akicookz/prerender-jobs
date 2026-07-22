@@ -49,11 +49,9 @@ cp .env.sample .env.local
 | `BASE_URL`               | yes      | —                        | Base URL for prerendering, e.g. `https://example.com` (must start with `https://`)                                              |
 | `PATHS_LIST`             | yes      | —                        | JSON array of path entries, e.g. `[{"path":"/","ttl":604800},{"path":"/about","ttl":86400}]`. Each `path` must start with `/`. `ttl` (seconds) defaults to 604800 (7 days) if omitted |
 | `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                                                                           |
-| `CF_API_TOKEN`           | yes      | —                        | Cloudflare API token (KV write access)                                                                                          |
 | `R2_ACCESS_KEY_ID`       | yes      | —                        | R2 S3-compatible access key                                                                                                     |
 | `R2_SECRET_ACCESS_KEY`   | yes      | —                        | R2 S3-compatible secret key                                                                                                     |
 | `R2_BUCKET_NAME`         | yes      | —                        | Target R2 bucket name                                                                                                           |
-| `KV_NAMESPACE_ID`        | yes      | —                        | KV namespace ID for the cache index                                                                                             |
 | `RETRY_OPTIONS`          | no       | —                        | JSON string forwarded as `retry_options` in the webhook for downstream retry handling                                           |
 | `SITEMAP_URL`            | no       | `<hostname>/sitemap.xml` | Explicit sitemap URL                                                                                                            |
 | `SITEMAP_UPDATED_WITHIN` | no       | `all`                    | Filter sitemap URLs by lastmod: `1d`, `3d`, `7d`, `30d`, `all`                                                                  |

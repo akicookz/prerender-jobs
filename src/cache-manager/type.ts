@@ -1,14 +1,5 @@
 export const CACHE_VERSION = "v1"; // bump to invalidate KV mapping semantics
 
-export interface CacheConfig {
-  cfAccountId: string;
-  cfApiToken: string;
-  r2AccessKeyId: string;
-  r2SecretAccessKey: string;
-  r2BucketName: string;
-  kvNamespaceId: string;
-}
-
 export interface KvRecord {
   url: string;
   objectKey: string;

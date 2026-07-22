@@ -37,6 +37,14 @@ describe("snapshot object key parity with lovablehtml worker", () => {
     );
   });
 
+  it("collapses trailing-slash variants to one key", async () => {
+    expect(
+      await buildSnapshotObjectKey({
+        targetUrl: "https://example.com/about/",
+      }),
+    ).toBe("v1/example.com/about_abf24d57a306f5a7.html");
+  });
+
   it("ignores tracking params in the key", async () => {
     expect(
       await buildSnapshotObjectKey({
