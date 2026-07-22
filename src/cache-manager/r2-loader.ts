@@ -1,6 +1,6 @@
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { AppLogger } from "../logger";
-import { buildKvKey, normalizeDomain } from "./kv-key-utils";
+import { buildSnapshotObjectKey } from "./kv-key-utils";
 import { CACHE_VERSION, KvRecord } from "./type";
 import { PageSeoAnalysis } from "../seo-analyzer/type";
 import {
@@ -227,21 +227,7 @@ export class R2Loader {
    * land on the same key the worker derives.
    */
   private async buildObjectKey(): Promise<string> {
-    const url = new URL(this._targetUrl);
-    const safeHost = normalizeDomain({ domain: url.hostname }).replace(
-      /[^a-z0-9.-]/g,
-      "-",
-    );
-    const safePath = url.pathname
-      .replace(/^\//, "")
-      .replace(/[^a-zA-Z0-9._/-]/g, "-")
-      .replace(/\/+/, "/")
-      .replace(/\//g, "_");
-    const base = safePath || "root";
-    const kvKeyDigest = await this.sha256Hex(
-      buildKvKey({ targetUrl: this._targetUrl }),
-    );
-    return `${CACHE_VERSION}/${safeHost}/${base}_${kvKeyDigest.slice(0, 16)}.html`;
+    return buildSnapshotObjectKey({ targetUrl: this._targetUrl });
   }
 
   private async sha256Hex(input: string): Promise<string> {

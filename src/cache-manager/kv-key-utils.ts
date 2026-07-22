@@ -96,3 +96,38 @@ function canonicalizePathForKey({ url }: { url: URL }): string {
   const qs = params.map(([k, v]) => `${k}=${v}`).join("&");
   return `${url.pathname}${qs ? `?${qs}` : ""}`;
 }
+
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Single source for snapshot object-key derivation: hash of the canonical
+ * KV-key string. The lovablehtml worker mirrors this in
+ * worker/lib/prerender/prerender.ts deriveSnapshotObjectKey — keep in sync.
+ * The host is normalized like buildKvKey's domain segment so www-preferred
+ * domains land on the same key the worker derives.
+ */
+export async function buildSnapshotObjectKey({
+  targetUrl,
+}: {
+  targetUrl: string;
+}): Promise<string> {
+  const url = new URL(targetUrl);
+  const safeHost = normalizeDomain({ domain: url.hostname }).replace(
+    /[^a-z0-9.-]/g,
+    "-",
+  );
+  const safePath = url.pathname
+    .replace(/^\//, "")
+    .replace(/[^a-zA-Z0-9._/-]/g, "-")
+    .replace(/\/+/, "/")
+    .replace(/\//g, "_");
+  const base = safePath || "root";
+  const kvKeyDigest = await sha256Hex(buildKvKey({ targetUrl }));
+  return `${CACHE_VERSION}/${safeHost}/${base}_${kvKeyDigest.slice(0, 16)}.html`;
+}
