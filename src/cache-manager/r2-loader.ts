@@ -89,9 +89,8 @@ export class R2Loader {
         objectKey: string;
       }
   > {
-    let url: URL;
     try {
-      url = new URL(this._targetUrl);
+      new URL(this._targetUrl);
     } catch (e) {
       this._logger.error(
         `Invalid URL: ${e instanceof Error ? e.message : String(e)}`,

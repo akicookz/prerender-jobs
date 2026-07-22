@@ -9,7 +9,6 @@ import puppeteer, { Browser } from "puppeteer-core";
 import { AssetCache } from "./asset-cache";
 import { stripTrackingParams } from "./cache-manager/kv-key-utils";
 import { R2Loader } from "./cache-manager/r2-loader";
-import { KvRecord } from "./cache-manager/type";
 import {
   sanitizeHtml,
   detectMetadataLoss,
@@ -43,15 +42,10 @@ interface PipelineResult {
   isRendered: boolean;
   isAnalyzed: boolean;
   isCachedToR2: boolean;
-  isCachedToKv: boolean;
   /** Wall-clock of the successful render attempt, from RenderDiagnostics. */
   renderDurationMs?: number;
   /** Why the path failed — unset on success. */
   failure?: PrerenderFailureDetail;
-  payloadForKv?: {
-    kvRecord: KvRecord;
-    objectKey: string;
-  };
 }
 
 interface ReportResultBody {
@@ -173,9 +167,6 @@ async function reportResult({
       if (result.isRendered) {
         acc.countRendered++;
       }
-      if (result.isCachedToKv) {
-        acc.countKvSynced++;
-      }
       if (result.isCachedToR2) {
         acc.countR2Synced++;
       }
@@ -185,10 +176,10 @@ async function reportResult({
           failure: result.failure ?? { reason: "unknown" },
         });
       }
-      if (result.isRendered && (!result.isCachedToKv || !result.isCachedToR2)) {
+      if (result.isRendered && !result.isCachedToR2) {
         acc.failedToSyncUrls.push(result.url);
       }
-      if (result.isRendered && result.isCachedToKv && result.isCachedToR2) {
+      if (result.isRendered && result.isCachedToR2) {
         acc.successUrls.push(result.url);
       }
       return acc;
@@ -423,7 +414,6 @@ async function runPipeline({
     isRendered: false,
     isAnalyzed: false,
     isCachedToR2: false,
-    isCachedToKv: false,
   };
   logger.info(`[${pipelineNumber}] Processing ${urlToRender}`);
 
@@ -632,10 +622,6 @@ async function runPipeline({
     );
     return result;
   }
-  result.payloadForKv = {
-    kvRecord: r2UploadResult.kvRecord,
-    objectKey: r2UploadResult.objectKey,
-  };
   logger.info(`${INDENT}${INDENT}↳ ${path} - snapshot uploaded to R2`);
   return result;
 }
@@ -742,7 +728,6 @@ async function runPipelineStreams({
     isRendered: false,
     isAnalyzed: false,
     isCachedToR2: false,
-    isCachedToKv: false,
     failure: { reason: "unknown" },
   });
 
@@ -830,9 +815,7 @@ async function runPipelineStreams({
     );
 
     const cacheStats = assetCache ? assetCache.stats() : null;
-    const cacheableTotal = cacheStats
-      ? cacheStats.hits + cacheStats.misses
-      : 0;
+    const cacheableTotal = cacheStats ? cacheStats.hits + cacheStats.misses : 0;
     const hitRatePct =
       cacheStats && cacheableTotal > 0
         ? (cacheStats.hits / cacheableTotal) * 100
@@ -939,12 +922,6 @@ async function main(): Promise<void> {
 
   if (config.skipCacheSync) {
     logger.info(`SKIPPING CACHE SYNC: SKIP_CACHE_SYNC is true`);
-  } else {
-    // KV records are no longer written; R2 at deterministic keys is the only
-    // snapshot store. A page counts as cache-synced when its R2 put landed.
-    urlResultMap.forEach((result) => {
-      result.isCachedToKv = !!result.payloadForKv;
-    });
   }
 
   const completedAt = Date.now();
