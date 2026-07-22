@@ -1,5 +1,6 @@
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { AppLogger } from "../logger";
+import { buildSnapshotObjectKey } from "./kv-key-utils";
 import { CACHE_VERSION, KvRecord } from "./type";
 import { PageSeoAnalysis } from "../seo-analyzer/type";
 import {
@@ -101,10 +102,7 @@ export class R2Loader {
     }
 
     const digest = await this.sha256Hex(this._html);
-    const objectKey = this.buildObjectKey({
-      url,
-      digest,
-    });
+    const objectKey = await this.buildObjectKey();
     const bodyBytes = new TextEncoder().encode(this._html);
     const kvRecord = this.buildKvRecord({
       digest,
@@ -220,25 +218,16 @@ export class R2Loader {
     };
   }
 
-  private buildObjectKey({
-    url,
-    digest,
-  }: {
-    url: URL;
-    digest: string;
-  }): string {
-    const safeHost = url.hostname.toLowerCase().replace(/[^a-z0-9.-]/g, "-");
-    const safePath = url.pathname
-      .replace(/^\//, "")
-      .replace(/[^a-zA-Z0-9._/-]/g, "-")
-      .replace(/\/+/, "/")
-      .replace(/\//g, "_");
-    const base = safePath || "root";
-    const ts = new Date().toISOString().replace(/[:.]/g, "");
-    return `${CACHE_VERSION}/${safeHost}/${base}_${digest.slice(
-      0,
-      16,
-    )}_${ts}.html`;
+  /**
+   * Deterministic per page: derived from the KV key (the page identity this
+   * job and the worker agree on), so every re-render overwrites the same
+   * object instead of accumulating timestamped copies. The lovablehtml
+   * worker's buildObjectKey mirrors this derivation — keep in sync. The host
+   * is normalized like buildKvKey's domain segment so www-preferred domains
+   * land on the same key the worker derives.
+   */
+  private async buildObjectKey(): Promise<string> {
+    return buildSnapshotObjectKey({ targetUrl: this._targetUrl });
   }
 
   private async sha256Hex(input: string): Promise<string> {

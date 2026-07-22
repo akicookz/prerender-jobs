@@ -1,6 +1,6 @@
 # prerender-jobs
 
-Prerender engine that fetches pages via headless Chromium, captures full HTML snapshots, and syncs them to Cloudflare R2 + KV.
+Prerender engine that fetches pages via headless Chromium, captures full HTML snapshots, and syncs them to Cloudflare R2 at deterministic per-page keys.
 
 ## How it works
 
@@ -11,7 +11,7 @@ The job runs in three top-level steps:
 3. **Run pipeline batches** — URLs are split into batches of `CONCURRENCY` and each batch is processed concurrently. Within a batch, every URL flows through a per-URL pipeline:
    1. **Render** — navigates the URL in a new tab and waits for the page to be ready (see [Readiness detection](#readiness-detection) below). If rendering fails the URL is skipped.
    2. **Analyse SEO** — parses the rendered HTML to extract SEO signals (title, meta description, canonical, robots directives, etc.). If analysis fails the URL is skipped.
-   3. **Sync cache** — uploads the HTML snapshot to Cloudflare R2 and writes the metadata index to Cloudflare KV (skipped when `SKIP_CACHE_SYNC=true`).
+   3. **Sync cache** — uploads the HTML snapshot (with metadata) to Cloudflare R2 at its deterministic per-page key (skipped when `SKIP_CACHE_SYNC=true`).
 4. **Report result** — sends a JSON summary to Telegram and/or POSTs to `WEBHOOK_URL`. Both paths are fire-and-log; errors do not abort the job. Fatal errors that crash the job also trigger a Telegram message with the `CLOUD_RUN_EXECUTION` ID and failure reason.
 
 ### Readiness detection
@@ -49,17 +49,15 @@ cp .env.sample .env.local
 | `BASE_URL`               | yes      | —                        | Base URL for prerendering, e.g. `https://example.com` (must start with `https://`)                                              |
 | `PATHS_LIST`             | yes      | —                        | JSON array of path entries, e.g. `[{"path":"/","ttl":604800},{"path":"/about","ttl":86400}]`. Each `path` must start with `/`. `ttl` (seconds) defaults to 604800 (7 days) if omitted |
 | `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                                                                           |
-| `CF_API_TOKEN`           | yes      | —                        | Cloudflare API token (KV write access)                                                                                          |
 | `R2_ACCESS_KEY_ID`       | yes      | —                        | R2 S3-compatible access key                                                                                                     |
 | `R2_SECRET_ACCESS_KEY`   | yes      | —                        | R2 S3-compatible secret key                                                                                                     |
 | `R2_BUCKET_NAME`         | yes      | —                        | Target R2 bucket name                                                                                                           |
-| `KV_NAMESPACE_ID`        | yes      | —                        | KV namespace ID for the cache index                                                                                             |
 | `RETRY_OPTIONS`          | no       | —                        | JSON string forwarded as `retry_options` in the webhook for downstream retry handling                                           |
 | `SITEMAP_URL`            | no       | `<hostname>/sitemap.xml` | Explicit sitemap URL                                                                                                            |
 | `SITEMAP_UPDATED_WITHIN` | no       | `all`                    | Filter sitemap URLs by lastmod: `1d`, `3d`, `7d`, `30d`, `all`                                                                  |
 | `USER_AGENT`             | no       | Chrome 124 UA string     | Custom user agent string                                                                                                        |
 | `CONCURRENCY`            | no       | `1`                      | Number of pages to render in parallel                                                                                           |
-| `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2 and KV                                                                                   |
+| `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2                                                                                   |
 | `SKIP_SITEMAP_PARSING`   | no       | `false`                  | Set to `true` to skip sitemap discovery and only render URLs in `URL_LIST`                                                      |
 | `ENCITED_INTERNAL_KEY`   | no       | —                        | Sent as `X-Encited-Internal-Key` on first-party requests so the Fly proxy exempts them from per-IP rate limiting                |
 | `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                                                                               |
@@ -159,7 +157,7 @@ On completion the job sends a JSON summary via Telegram (if configured) and/or P
     "failed_to_render": { "paths": [], "count": 0 }, // URL paths (not full URLs)
     "failed_to_sync": { "paths": [], "count": 0 }, // URL paths (not full URLs)
   },
-  "success_paths": ["/", "/about", "/blog/post-1"], // paths fully rendered and synced to R2 + KV
+  "success_paths": ["/", "/about", "/blog/post-1"], // paths fully rendered and synced to R2
   // present only when RETRY_OPTIONS is set:
   "retry_options": {
     /* parsed from RETRY_OPTIONS env var */

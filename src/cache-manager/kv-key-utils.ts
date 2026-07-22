@@ -16,6 +16,9 @@ const TRACKING_PARAMS = new Set([
   "twclid",
   "mc_cid",
   "mc_eid",
+  "yclid",
+  "_gl",
+  "_ga",
 ]);
 
 function isTrackingParam(name: string): boolean {
@@ -82,6 +85,7 @@ function canonicalizePathForKey({ url }: { url: URL }): string {
     "cache_invalidate",
     "to_html",
     "x-lovablehtml-render",
+    "__lh_verify", // worker VERIFY_NONCE_PARAM — keep omit-sets identical
   ]);
   // Tracking params are also omitted at the key boundary so keys written by
   // this job match the serve-path keys computed from already-stripped URLs.
@@ -91,4 +95,55 @@ function canonicalizePathForKey({ url }: { url: URL }): string {
   params.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
   const qs = params.map(([k, v]) => `${k}=${v}`).join("&");
   return `${url.pathname}${qs ? `?${qs}` : ""}`;
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Single source for snapshot object-key derivation: hash of the canonical
+ * KV-key string. The lovablehtml worker mirrors this in
+ * worker/lib/prerender/prerender.ts deriveSnapshotObjectKey — keep in sync.
+ * The host is normalized like buildKvKey's domain segment so www-preferred
+ * domains land on the same key the worker derives.
+ */
+function stripTrailingSlash(targetUrl: string): string {
+  try {
+    const u = new URL(targetUrl);
+    if (u.pathname.length > 1 && u.pathname.endsWith("/")) {
+      u.pathname = u.pathname.slice(0, -1);
+      return u.toString();
+    }
+    return targetUrl;
+  } catch {
+    return targetUrl;
+  }
+}
+
+export async function buildSnapshotObjectKey({
+  targetUrl: rawTargetUrl,
+}: {
+  targetUrl: string;
+}): Promise<string> {
+  // Trailing-slash variants must collapse to one object even when a writer
+  // receives the un-normalized form (e.g. a redirect-followed final URL).
+  const targetUrl = stripTrailingSlash(rawTargetUrl);
+  const url = new URL(targetUrl);
+  const safeHost = normalizeDomain({ domain: url.hostname }).replace(
+    /[^a-z0-9.-]/g,
+    "-",
+  );
+  const safePath = url.pathname
+    .replace(/^\//, "")
+    .replace(/[^a-zA-Z0-9._/-]/g, "-")
+    .replace(/\/+/, "/")
+    .replace(/\//g, "_");
+  const base = safePath || "root";
+  const kvKeyDigest = await sha256Hex(buildKvKey({ targetUrl }));
+  return `${CACHE_VERSION}/${safeHost}/${base}_${kvKeyDigest.slice(0, 16)}.html`;
 }
