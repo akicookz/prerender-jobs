@@ -70,14 +70,17 @@ export class R2Loader {
     });
   }
 
-  async uploadR2Object(): Promise<{ r2Synced: boolean }> {
+  async uploadR2Object(): Promise<{
+    r2Synced: boolean;
+    objectKey: string | null;
+  }> {
     try {
       new URL(this._targetUrl);
     } catch (e) {
       this._logger.error(
         `Invalid URL: ${e instanceof Error ? e.message : String(e)}`,
       );
-      return { r2Synced: false };
+      return { r2Synced: false, objectKey: null };
     }
 
     const digest = await sha256Hex(this._html);
@@ -104,9 +107,9 @@ export class R2Loader {
       });
     } catch (e) {
       this._logger.error("Failed to upload R2 object:", e);
-      return { r2Synced: false };
+      return { r2Synced: false, objectKey: null };
     }
-    return { r2Synced: true };
+    return { r2Synced: true, objectKey };
   }
 
   private get r2Client(): S3Client {

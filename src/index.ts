@@ -261,7 +261,9 @@ async function reportResult({
 
   if (config.retryOptions) {
     try {
-      resultBody.retry_options = JSON.parse(config.retryOptions) as RetryOptions;
+      resultBody.retry_options = JSON.parse(
+        config.retryOptions,
+      ) as RetryOptions;
     } catch (e) {
       logger.error(`Failed to parse retry options`, e);
     }
@@ -626,7 +628,9 @@ async function runPipeline({
     );
     return result;
   }
-  logger.info(`${INDENT}${INDENT}↳ ${path} - snapshot uploaded to R2`);
+  logger.info(
+    `${INDENT}${INDENT}↳ ${path} - snapshot uploaded to R2 (objectKey: ${r2UploadResult.objectKey})`,
+  );
   return result;
 }
 
