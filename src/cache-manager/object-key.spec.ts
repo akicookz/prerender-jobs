@@ -22,6 +22,11 @@ const FIXTURES: Array<[string, string]> = [
     "https://example.com/products?a=1&b=2&utm_source=x&_ga=123",
     "v1/example.com/products_dea9c3d5840ae46b.html",
   ],
+  // Consecutive-slash runs collapse everywhere in the readable prefix (the
+  // digest hashes the raw pathname, so it is unaffected). Pinned so a
+  // one-sided change to the collapse regex fails here instead of silently
+  // de-syncing the two repos' keys.
+  ["https://example.com/a//b//c", "v1/example.com/a_b_c_93ed12a59c020adf.html"],
 ];
 
 describe("snapshot object key parity with lovablehtml worker", () => {

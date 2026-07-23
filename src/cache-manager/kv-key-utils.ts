@@ -138,10 +138,13 @@ export async function buildSnapshotObjectKey({
     /[^a-z0-9.-]/g,
     "-",
   );
+  // Every replace here must match the worker's buildSafePathBase
+  // byte-for-byte — a one-sided change re-keys affected pages and the batch
+  // renderer's writes become invisible to the serve path.
   const safePath = url.pathname
     .replace(/^\//, "")
     .replace(/[^a-zA-Z0-9._/-]/g, "-")
-    .replace(/\/+/, "/")
+    .replace(/\/+/g, "/")
     .replace(/\//g, "_");
   const base = safePath || "root";
   const kvKeyDigest = await sha256Hex(buildKvKey({ targetUrl }));
