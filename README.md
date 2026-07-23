@@ -4,26 +4,33 @@ Prerender engine that fetches pages via headless Chromium, captures full HTML sn
 
 ## How it works
 
-The job runs in three top-level steps:
+The job runs in four top-level steps:
 
-1. **Prepare URLs** — merges `PATHS_LIST` (resolved against `BASE_URL`) with all URLs discovered from the sitemap, deduplicates, and normalises them. If `SKIP_SITEMAP_PARSING=true`, sitemap discovery is skipped and only the paths in `PATHS_LIST` are used. Each path entry can specify its own `ttl` (cache TTL in seconds).
-2. **Launch browser** — opens a single shared headless Chromium instance (puppeteer-core) reused for all pages.
-3. **Run pipeline batches** — URLs are split into batches of `CONCURRENCY` and each batch is processed concurrently. Within a batch, every URL flows through a per-URL pipeline:
-   1. **Render** — navigates the URL in a new tab and waits for the page to be ready (see [Readiness detection](#readiness-detection) below). If rendering fails the URL is skipped.
-   2. **Analyse SEO** — parses the rendered HTML to extract SEO signals (title, meta description, canonical, robots directives, etc.). If analysis fails the URL is skipped.
-   3. **Sync cache** — uploads the HTML snapshot (with metadata) to Cloudflare R2 at its deterministic per-page key (skipped when `SKIP_CACHE_SYNC=true`).
-4. **Report result** — sends a JSON summary to Telegram and/or POSTs to `WEBHOOK_URL`. Both paths are fire-and-log; errors do not abort the job. Fatal errors that crash the job also trigger a Telegram message with the `CLOUD_RUN_EXECUTION` ID and failure reason.
+1. **Prepare URLs** — merges `PATHS_LIST` (resolved against `BASE_URL`) with all URLs discovered from the sitemap, deduplicates, normalises them, and strips tracking params (`utm_*`, click IDs) so URL variants share one render and one cache entry. If `SKIP_SITEMAP_PARSING=true`, sitemap discovery is skipped and only the paths in `PATHS_LIST` are used. Each path entry can specify its own `ttl` (cache TTL in seconds).
+2. **Launch browsers** — one headless Chromium instance (puppeteer-core) per stream, `CONCURRENCY` streams total (capped at the URL count). Each stream's browser is recycled every 20 renders to avoid Chromium memory bloat and relaunched on demand if it dies. Stream start-up is staggered by 2 s so concurrent boot phases don't hit the container at once.
+3. **Run pipeline streams** — each stream pulls the next URL as soon as it finishes its current one (no batch barrier, so one slow render never idles the other streams). All streams share a job-wide in-memory asset cache: each unique script/stylesheet/font/image is fetched from the customer's origin once and served from memory on later renders (disable with `DISABLE_ASSET_CACHE=true`). Every URL flows through a per-URL pipeline:
+   1. **Render** — navigates the URL in a new tab and waits for the page to be ready (see [Readiness detection](#readiness-detection) below). A near-empty snapshot (loading shell) is retried once with 4× stability windows; if rendering fails the URL is skipped.
+   2. **Analyse SEO** — parses the rendered HTML to extract SEO signals (title, meta description, canonical, robots directives, soft-404 verdict, etc.). If analysis fails the URL is skipped.
+   3. **Sync cache** — uploads the sanitized HTML snapshot (with SEO + render-diagnostics metadata) to Cloudflare R2 at its deterministic per-page key (skipped when `SKIP_CACHE_SYNC=true`).
+4. **Report result** — POSTs a JSON summary to `WEBHOOK_URL` (if configured); a Telegram alert is additionally sent for the final retry run or a manual run that finished with failures. Both paths are fire-and-log; errors do not abort the job. Fatal errors that crash the job also trigger a Telegram message with the `CLOUD_RUN_EXECUTION` ID and failure reason.
 
 ### Readiness detection
 
 After the initial page load, the engine polls until one of the following conditions is met (in priority order):
 
-| Signal                    | Trigger                                                                              |
-| ------------------------- | ------------------------------------------------------------------------------------ |
-| App signal                | `window.prerenderReady === true` or `window.htmlSnapshot === true`                   |
-| Network + DOM stable      | No pending first-party requests for 500 ms **and** no DOM mutations for 300 ms       |
-| Network stable (extended) | Network idle for 500 ms, DOM still mutating — snapshot taken after an additional 3 s |
-| Hard timeout              | 15 s elapsed since navigation                                                        |
+| Signal                    | Trigger                                                                                             |
+| ------------------------- | --------------------------------------------------------------------------------------------------- |
+| App signal                | `window.prerenderReady === true` or `window.htmlSnapshot === true`, once first-party requests are quiet |
+| Network + DOM stable      | No pending first-party requests for 500 ms **and** no DOM mutations for 500 ms                      |
+| Network stable (extended) | Network idle for 500 ms, DOM still mutating — snapshot taken after an additional 3 s                |
+| Hard timeout              | 30 s elapsed since navigation                                                                       |
+
+Additional gates on top of the table:
+
+- **Head metadata** — except on hard timeout, the snapshot also waits until `<head>` carries a non-empty `<title>` (or a react-helmet meta), followed by a final 300 ms DOM settle for late meta injections.
+- **Main-thread heartbeat** — an injected 100 ms counter must advance ≥ 3 ticks after network idle; a CPU-starved renderer (quiet network, frozen main thread) is not mistaken for a stable page.
+- **Retry widening** — when a render is retried after a thin (loading-shell) snapshot, all quiet/stable/settle windows above are widened 4×.
+- **Attempt caps** — each render attempt is capped at 65 s overall (navigation itself at 30 s); a frame-detach error triggers one retry with a fresh page. Navigation loops abort after 10 top-level navigations.
 
 Third-party domains (analytics, fonts, ad networks) are excluded from network idle tracking.
 
@@ -58,12 +65,15 @@ cp .env.sample .env.local
 | `USER_AGENT`             | no       | Chrome 124 UA string     | Custom user agent string                                                                                                        |
 | `CONCURRENCY`            | no       | `1`                      | Number of pages to render in parallel                                                                                           |
 | `SKIP_CACHE_SYNC`        | no       | `true`                   | Set to `false` to upload results to R2                                                                                   |
-| `SKIP_SITEMAP_PARSING`   | no       | `false`                  | Set to `true` to skip sitemap discovery and only render URLs in `URL_LIST`                                                      |
+| `SKIP_SITEMAP_PARSING`   | no       | `false`                  | Set to `true` to skip sitemap discovery and only render URLs in `PATHS_LIST`                                                    |
+| `CANONICAL_DOMAIN`       | no       | value of `DOMAIN`        | Preferred hostname rewritten into canonical/og:url/base tags                                                                    |
 | `ENCITED_INTERNAL_KEY`   | no       | —                        | Sent as `X-Encited-Internal-Key` on first-party requests so the Fly proxy exempts them from per-IP rate limiting                |
 | `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                                                                               |
 | `WEBHOOK_SIGNATURE`      | no       | —                        | Secret sent as `x-webhook-signature` header with every webhook request                                                          |
-| `TELEGRAM_BOT_TOKEN`     | no       | built-in default         | Telegram bot token for result/failure notifications; uses a shared default if omitted                                           |
-| `TELEGRAM_CHAT_ID`       | no       | built-in default         | Telegram chat ID to send notifications to; uses a shared default if omitted                                                     |
+| `TELEGRAM_BOT_TOKEN`     | no       | —                        | Telegram bot token for result/failure notifications; Telegram is skipped if unset                                               |
+| `TELEGRAM_CHAT_ID`       | no       | —                        | Telegram chat ID to send notifications to; Telegram is skipped if unset                                                         |
+| `OUTPUT_DIR`             | no       | —                        | When set, each run writes its HTML snapshots and a `summary.json` into a timestamped subdirectory (local testing aid)           |
+| `DISABLE_ASSET_CACHE`    | no       | `false`                  | Set to `true` to disable the job-wide asset cache (every render fetches all assets from origin; for A/B measurement)            |
 
 ### 2. Run via Docker
 
@@ -136,7 +146,7 @@ pnpm exec:cloud
 
 ## Result reporting
 
-On completion the job sends a JSON summary via Telegram (if configured) and/or POSTs it to `WEBHOOK_URL` (if configured). Both are optional and independent.
+On completion the job POSTs a JSON summary to `WEBHOOK_URL` (if configured). A Telegram summary is additionally sent when the run is the final retry (`retry_count` of 2) or a manual run that finished with failures.
 
 ```jsonc
 {
@@ -145,15 +155,19 @@ On completion the job sends a JSON summary via Telegram (if configured) and/or P
   "source": "scheduler", // value of the REQUEST_SOURCE env var
   "google_cloud_execution_id": "abc123", // Cloud Run execution ID, or "local"
   "domain": "example.com",
+  "canonical_domain": "example.com",
   "origin_host": "origin.example.com",
   "urls_rendered": 42,
   "urls_synced_r2": 42,
-  "urls_synced_kv": 42,
-  "sitemap_url": "https://example.com/sitemap.xml",
+  "urls_synced_kv": 0, // always 0 — KV sync was removed; field kept for contract compatibility
+  "sitemap_url": "https://example.com/sitemap.xml", // "skipped" when SKIP_SITEMAP_PARSING=true
   "sitemap_filter": "all",
-  "started_at": 1234567890,
-  "finished_at": 1234567899,
+  "started_at": "2026-07-23T00:00:00.000Z", // ISO 8601 UTC
+  "finished_at": "2026-07-23T00:05:00.000Z",
   "failed": {
+    // entries are { "path": "/x", "error": { "reason": "...", "status": 404 } }
+    // reasons: fetch_error (with HTTP status), too_many_redirects,
+    // navigation_loop, sync_failed, unknown
     "failed_to_render": { "paths": [], "count": 0 }, // URL paths (not full URLs)
     "failed_to_sync": { "paths": [], "count": 0 }, // URL paths (not full URLs)
   },

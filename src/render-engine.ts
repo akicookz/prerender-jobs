@@ -432,7 +432,7 @@ export class RenderEngine {
         return;
       }
 
-      const resourceType = req.resourceType() as unknown as string;
+      const resourceType = req.resourceType();
 
       // Serve repeat static-asset requests from the job-wide cache so each
       // bundle/stylesheet/font/image hits the origin once per job, not once
@@ -608,7 +608,7 @@ export class RenderEngine {
     if (req.method() !== "GET" || cache.has(url)) {
       return;
     }
-    if (!CACHEABLE_ASSET_TYPES.has(req.resourceType() as unknown as string)) {
+    if (!CACHEABLE_ASSET_TYPES.has(req.resourceType())) {
       return;
     }
     // Only complete 200 bodies — redirects, 304s and partial responses can't
@@ -687,7 +687,7 @@ export class RenderEngine {
         return false;
       }
 
-      const resourceType = req.resourceType() as unknown as string;
+      const resourceType = req.resourceType();
 
       // Always track fetch/xhr regardless of host — SPAs often fetch from
       // API subdomains (api.example.com) or third-party headless CMS endpoints
@@ -780,43 +780,50 @@ export class RenderEngine {
     return ignoredHosts.some((h) => host === h || host.endsWith(`.${h}`));
   }
 
-  private async checkAppSignal({ page }: { page: Page }): Promise<boolean> {
+  // Readiness probes run against a page that may be busy or mid-navigation:
+  // cap every evaluate at a short timeout and fall back instead of throwing.
+  // The fallback is a factory so time-based fallbacks reflect resolve time.
+  private async evaluateWithTimeout<T>(
+    page: Page,
+    fn: () => T,
+    fallback: () => T,
+    timeoutMs = 1000,
+  ): Promise<T> {
     try {
-      const result = await Promise.race([
-        page.evaluate(() => {
-          // @ts-expect-error - custom window properties
-          const ready = window.prerenderReady as boolean;
-          // @ts-expect-error - custom window properties
-          const snapshot = window.htmlSnapshot as boolean;
-          return ready === true || snapshot === true;
-        }),
-        new Promise<boolean>((resolve) =>
-          setTimeout(() => resolve(false), 1000),
+      return await Promise.race([
+        page.evaluate(fn) as Promise<T>,
+        new Promise<T>((resolve) =>
+          setTimeout(() => resolve(fallback()), timeoutMs),
         ),
       ]);
-
-      return result;
     } catch {
-      return false;
+      return fallback();
     }
   }
 
-  private async getLastDomChange({ page }: { page: Page }): Promise<number> {
-    try {
-      const result = await Promise.race([
-        page.evaluate(() => {
-          // @ts-expect-error - custom window properties
-          return (window.__lastDomChange ?? Date.now()) as number;
-        }),
-        new Promise<number>((resolve) =>
-          setTimeout(() => resolve(Date.now()), 1000),
-        ),
-      ]);
+  private async checkAppSignal({ page }: { page: Page }): Promise<boolean> {
+    return this.evaluateWithTimeout(
+      page,
+      () => {
+        // @ts-expect-error - custom window properties
+        const ready = window.prerenderReady as boolean;
+        // @ts-expect-error - custom window properties
+        const snapshot = window.htmlSnapshot as boolean;
+        return ready === true || snapshot === true;
+      },
+      () => false,
+    );
+  }
 
-      return result;
-    } catch {
-      return Date.now();
-    }
+  private async getLastDomChange({ page }: { page: Page }): Promise<number> {
+    return this.evaluateWithTimeout(
+      page,
+      () => {
+        // @ts-expect-error - custom window properties
+        return (window.__lastDomChange ?? Date.now()) as number;
+      },
+      () => Date.now(),
+    );
   }
 
   private async getHeartbeatTick({
@@ -824,19 +831,14 @@ export class RenderEngine {
   }: {
     page: Page;
   }): Promise<number | null> {
-    try {
-      const result = await Promise.race([
-        page.evaluate(() => {
-          // @ts-expect-error - custom window properties
-          return (window.__heartbeatTick ?? null) as number | null;
-        }),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000)),
-      ]);
-
-      return result;
-    } catch {
-      return null;
-    }
+    return this.evaluateWithTimeout<number | null>(
+      page,
+      () => {
+        // @ts-expect-error - custom window properties
+        return (window.__heartbeatTick ?? null) as number | null;
+      },
+      () => null,
+    );
   }
 
   private async injectPrerenderScripts({
@@ -914,22 +916,17 @@ export class RenderEngine {
   }
 
   private async hasHeadMetadata({ page }: { page: Page }): Promise<boolean> {
-    try {
-      return await Promise.race([
-        page.evaluate(() => {
-          return !!(
-            document.querySelector("title")?.textContent ||
-            document.querySelector('meta[data-rh="true"]') ||
-            document.querySelector("meta[data-react-helmet]")
-          );
-        }),
-        new Promise<boolean>((resolve) =>
-          setTimeout(() => resolve(false), 1000),
-        ),
-      ]);
-    } catch {
-      return false;
-    }
+    return this.evaluateWithTimeout(
+      page,
+      () => {
+        return !!(
+          document.querySelector("title")?.textContent ||
+          document.querySelector('meta[data-rh="true"]') ||
+          document.querySelector("meta[data-react-helmet]")
+        );
+      },
+      () => false,
+    );
   }
 
   private async waitForPageReady({

@@ -1,4 +1,5 @@
 import { CACHE_VERSION } from "./type";
+import { sha256Hex } from "../util";
 
 const INTERNAL_PRERENDER_PARAM = "to_html";
 
@@ -62,20 +63,12 @@ export function buildKvKey({ targetUrl }: { targetUrl: string }): string {
 }
 
 export function normalizeDomain({ domain }: { domain: string }): string {
-  const normalizedDomain = domain
+  return domain
     .toLowerCase()
     .trim()
     .replace(/^http(s)?:\/\//, "")
     .replace(/^www\./, "")
     .replace(/\/$/, "");
-
-  const hasTrailingSlash = normalizedDomain.at(-1) === "/";
-
-  if (hasTrailingSlash) {
-    return normalizedDomain.slice(0, -1);
-  }
-
-  return normalizedDomain;
 }
 
 function canonicalizePathForKey({ url }: { url: URL }): string {
@@ -95,14 +88,6 @@ function canonicalizePathForKey({ url }: { url: URL }): string {
   params.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
   const qs = params.map(([k, v]) => `${k}=${v}`).join("&");
   return `${url.pathname}${qs ? `?${qs}` : ""}`;
-}
-
-async function sha256Hex(input: string): Promise<string> {
-  const data = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
 }
 
 /**

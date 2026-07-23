@@ -7,6 +7,7 @@ import * as TelegramBot from "node-telegram-bot-api";
 import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
 import { AssetCache } from "./asset-cache";
+import { BrowserPool } from "./browser-pool";
 import { stripTrackingParams } from "./cache-manager/kv-key-utils";
 import { R2Loader } from "./cache-manager/r2-loader";
 import {
@@ -16,7 +17,11 @@ import {
   restoreDataUrls,
 } from "./html-sanitizer";
 import { looksLikeFailedRender } from "./html-sanitizer/soft-404";
-import { loadConfig, type Configuration } from "./load-config";
+import {
+  loadConfig,
+  DEFAULT_CACHE_TTL,
+  type Configuration,
+} from "./load-config";
 import { AppLogger, INDENT } from "./logger";
 import { RenderEngine, type RenderResult } from "./render-engine";
 import { RequestStats } from "./request-stats";
@@ -38,15 +43,23 @@ import {
 
 interface PipelineResult {
   url: string;
-  cacheTtl: number;
   isRendered: boolean;
-  isAnalyzed: boolean;
   isCachedToR2: boolean;
   /** Wall-clock of the successful render attempt, from RenderDiagnostics. */
   renderDurationMs?: number;
   /** Why the path failed — unset on success. */
   failure?: PrerenderFailureDetail;
 }
+
+interface RetryOptions {
+  parent_batch_group_ids: string[];
+  parent_execution_ids: string[];
+  retry_count: number;
+}
+
+// A batch is retried at most twice downstream; the run carrying this retry
+// count is the last one, so its failures are final and worth alerting on.
+const FINAL_RETRY_COUNT = 2;
 
 interface ReportResultBody {
   batch_id: string;
@@ -73,14 +86,32 @@ interface ReportResultBody {
       count: number;
     };
   };
-  retry_options?: {
-    parent_batch_group_ids: string[];
-    parent_execution_ids: string[];
-    retry_count: number;
-  };
+  retry_options?: RetryOptions;
 }
 
 const logger = AppLogger.register({ prefix: "index" });
+
+// Telegram is a best-effort side channel: every send is capped at 10s and
+// callers catch and log failures without affecting the job.
+async function sendTelegramMessage({
+  botToken,
+  chatId,
+  message,
+}: {
+  botToken: string;
+  chatId: string;
+  message: string;
+}): Promise<void> {
+  const telegramBot = new TelegramBot(botToken);
+  await Promise.race([
+    telegramBot.sendMessage(chatId, message.slice(0, 4096), {
+      parse_mode: "MarkdownV2",
+    }),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Telegram send timeout")), 10000),
+    ),
+  ]);
+}
 
 function getConfig(): Configuration {
   try {
@@ -151,14 +182,12 @@ async function reportResult({
   const {
     successUrls,
     countRendered,
-    countKvSynced,
     countR2Synced,
     failedToRenderUrls,
     failedToSyncUrls,
   } = urlResultMap.values().reduce<{
     successUrls: string[];
     countRendered: number;
-    countKvSynced: number;
     countR2Synced: number;
     failedToRenderUrls: { url: string; failure: PrerenderFailureDetail }[];
     failedToSyncUrls: string[];
@@ -187,7 +216,6 @@ async function reportResult({
     {
       successUrls: [],
       countRendered: 0,
-      countKvSynced: 0,
       countR2Synced: 0,
       failedToRenderUrls: [],
       failedToSyncUrls: [],
@@ -205,7 +233,8 @@ async function reportResult({
     origin_host: originHost,
     urls_rendered: countRendered,
     urls_synced_r2: countR2Synced,
-    urls_synced_kv: countKvSynced,
+    // KV sync was removed; the field stays 0 to keep the webhook contract.
+    urls_synced_kv: 0,
     sitemap_url: sitemapUrl,
     sitemap_filter: sitemapFilter,
     started_at: DateTime.fromMillis(startedAt).toUTC().toISO()!,
@@ -232,18 +261,13 @@ async function reportResult({
 
   if (config.retryOptions) {
     try {
-      resultBody.retry_options = JSON.parse(config.retryOptions) as {
-        parent_batch_group_ids: string[];
-        parent_execution_ids: string[];
-        retry_count: number;
-      };
+      resultBody.retry_options = JSON.parse(config.retryOptions) as RetryOptions;
     } catch (e) {
       logger.error(`Failed to parse retry options`, e);
     }
   }
   const isFinalRetryRun =
-    resultBody.retry_options?.retry_count &&
-    resultBody.retry_options.retry_count === 2;
+    resultBody.retry_options?.retry_count === FINAL_RETRY_COUNT;
   const hasFailedCases =
     failedToRenderUrls.length > 0 || failedToSyncUrls.length > 0;
   const shouldSendToTelegram =
@@ -254,7 +278,6 @@ async function reportResult({
     shouldSendToTelegram
   ) {
     logger.info(`Sending result to Telegram chat: ${config.telegramChatId}`);
-    const telegramBot = new TelegramBot(config.telegramBotToken);
     const parentBatchGroupIds =
       resultBody.retry_options?.parent_batch_group_ids ?? [];
     const parentExecutionIds =
@@ -305,16 +328,12 @@ async function reportResult({
       }
     }
 
-    const telegramMessage = lines.join("\n").slice(0, 4096);
     try {
-      await Promise.race([
-        telegramBot.sendMessage(config.telegramChatId, telegramMessage, {
-          parse_mode: "MarkdownV2",
-        }),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Telegram send timeout")), 10000),
-        ),
-      ]);
+      await sendTelegramMessage({
+        botToken: config.telegramBotToken,
+        chatId: config.telegramChatId,
+        message: lines.join("\n"),
+      });
       logger.info(`Result sent to Telegram successfully`);
     } catch (e) {
       logger.error(`Failed to send result to Telegram`, e);
@@ -410,9 +429,7 @@ async function runPipeline({
   const path = extractPathFromUrl(urlToRender);
   const result: PipelineResult = {
     url: urlToRender,
-    cacheTtl,
     isRendered: false,
-    isAnalyzed: false,
     isCachedToR2: false,
   };
   logger.info(`[${pipelineNumber}] Processing ${urlToRender}`);
@@ -492,7 +509,6 @@ async function runPipeline({
         xRobotsTag: renderResult.xRobotsTag ?? null,
       });
       seoAnalysisResult = analyzer.analyze();
-      result.isAnalyzed = true;
       logger.info(`${INDENT}${INDENT}↳ ${path} - SEO analysis completed`);
     } catch (e) {
       logger.error(`${INDENT}${INDENT}↳ ${path} - SEO analysis failed`, e);
@@ -544,24 +560,12 @@ async function runPipeline({
       );
 
       if (config.telegramBotToken && config.telegramChatId) {
-        const telegramBot = new TelegramBot(config.telegramBotToken);
-        const message =
-          `⚠️ SEO metadata lost during sanitization\n\nJob ID: ${escapeMarkdownV2(process.env.CLOUD_RUN_EXECUTION ?? "")}\nURL: ${escapeMarkdownV2(urlToRender)}\nPath: ${escapeMarkdownV2(path)}\nLost: ${escapeMarkdownV2(metadataLoss.lostProperties.join(", "))}`.slice(
-            0,
-            4096,
-          );
         try {
-          await Promise.race([
-            telegramBot.sendMessage(config.telegramChatId, message, {
-              parse_mode: "MarkdownV2",
-            }),
-            new Promise((_, reject) =>
-              setTimeout(
-                () => reject(new Error("Telegram send timeout")),
-                10000,
-              ),
-            ),
-          ]);
+          await sendTelegramMessage({
+            botToken: config.telegramBotToken,
+            chatId: config.telegramChatId,
+            message: `⚠️ SEO metadata lost during sanitization\n\nJob ID: ${escapeMarkdownV2(process.env.CLOUD_RUN_EXECUTION ?? "")}\nURL: ${escapeMarkdownV2(urlToRender)}\nPath: ${escapeMarkdownV2(path)}\nLost: ${escapeMarkdownV2(metadataLoss.lostProperties.join(", "))}`,
+          });
         } catch (e) {
           logger.error(`Failed to send metadata loss alert to Telegram`, e);
         }
@@ -626,6 +630,90 @@ async function runPipeline({
   return result;
 }
 
+// End-of-run reporting: log render durations, outbound-request and
+// asset-cache stats, and (when snapshots are written) a machine-readable
+// summary.json next to them so cache-on/cache-off runs can be diffed
+// without scraping logs.
+async function reportRunSummary({
+  pipelineResults,
+  requestStats,
+  assetCache,
+  snapshotDir,
+  concurrency,
+}: {
+  pipelineResults: PipelineResult[];
+  requestStats: RequestStats;
+  assetCache: AssetCache | null;
+  snapshotDir: string | null;
+  concurrency: number;
+}): Promise<void> {
+  logger.info(`[Summary] Render durations:`);
+  for (const r of pipelineResults) {
+    const duration =
+      r.renderDurationMs !== undefined
+        ? `${(r.renderDurationMs / 1000).toFixed(1)}s`
+        : `failed (${r.failure?.reason ?? "unknown"})`;
+    logger.info(`${INDENT}${extractPathFromUrl(r.url)} — ${duration}`);
+  }
+
+  const reqStats = requestStats.stats();
+  logger.info(
+    `[Summary] Outbound requests: ${reqStats.originRequests} to customer origin, ` +
+      `${reqStats.thirdPartyRequests} to third parties`,
+  );
+
+  const cacheStats = assetCache ? assetCache.stats() : null;
+  const cacheableTotal = cacheStats ? cacheStats.hits + cacheStats.misses : 0;
+  const hitRatePct =
+    cacheStats && cacheableTotal > 0
+      ? (cacheStats.hits / cacheableTotal) * 100
+      : 0;
+  if (cacheStats) {
+    const toMb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
+    logger.info(
+      `[AssetCache] ${cacheStats.hits}/${cacheableTotal} cacheable asset requests served from memory (${hitRatePct.toFixed(1)}%, ${toMb(cacheStats.servedBytes)} MB kept off origin); ` +
+        `${cacheStats.entryCount} unique assets cached (${toMb(cacheStats.storedBytes)} MB stored, ${cacheStats.skippedEntries} skipped by size caps)`,
+    );
+  }
+
+  if (snapshotDir) {
+    const summary = {
+      finishedAt: DateTime.now().toUTC().toISO(),
+      concurrency,
+      assetCacheEnabled: assetCache !== null,
+      pages: pipelineResults.map((r) => ({
+        path: extractPathFromUrl(r.url),
+        url: r.url,
+        rendered: r.isRendered,
+        renderDurationMs: r.renderDurationMs ?? null,
+        failureReason: r.failure?.reason ?? null,
+      })),
+      outboundRequests: {
+        customerOrigin: reqStats.originRequests,
+        thirdParty: reqStats.thirdPartyRequests,
+      },
+      assetCache: cacheStats
+        ? {
+            hits: cacheStats.hits,
+            misses: cacheStats.misses,
+            hitRatePct: Number(hitRatePct.toFixed(1)),
+            servedBytes: cacheStats.servedBytes,
+            uniqueAssets: cacheStats.entryCount,
+            storedBytes: cacheStats.storedBytes,
+            skippedEntries: cacheStats.skippedEntries,
+          }
+        : null,
+    };
+    const summaryFile = join(snapshotDir, "summary.json");
+    try {
+      await writeFile(summaryFile, JSON.stringify(summary, null, 2));
+      logger.info(`[Summary] Written to ${summaryFile}`);
+    } catch (e) {
+      logger.warn(`[Summary] Failed to write ${summaryFile}`, e);
+    }
+  }
+}
+
 async function runPipelineStreams({
   concurrency,
   urlsToRender,
@@ -682,40 +770,12 @@ async function runPipelineStreams({
   const STREAM_START_STAGGER_MS = 2_000;
 
   // Allocate one browser per stream (one per concurrency slot) up front.
-  const browsers: (Browser | null)[] = new Array<Browser | null>(
-    concurrency,
-  ).fill(null);
-  for (let slot = 0; slot < concurrency; slot++) {
-    try {
-      browsers[slot] = await launchBrowserFn();
-    } catch (e) {
-      logger.error(`[Browser] Failed to launch browser for stream ${slot}`, e);
-      browsers[slot] = null;
-    }
-  }
-
-  const ensureHealthy = async (slot: number): Promise<Browser | null> => {
-    const current = browsers[slot];
-    if (current && current.connected) {
-      return current;
-    }
-    if (current) {
-      await current.close().catch(() => {});
-    }
-    try {
-      const fresh = await launchBrowserFn();
-      browsers[slot] = fresh;
-      logger.info(`[Browser] Stream ${slot} browser refreshed`);
-      return fresh;
-    } catch (e) {
-      logger.error(
-        `[Browser] Failed to relaunch browser for stream ${slot}`,
-        e,
-      );
-      browsers[slot] = null;
-      return null;
-    }
-  };
+  const pool = BrowserPool.register({
+    size: concurrency,
+    launch: launchBrowserFn,
+    logger,
+  });
+  await pool.init();
 
   // Each stream pulls the next URL as soon as it finishes its current one —
   // no batch barrier, so one slow render never idles the other streams and
@@ -724,9 +784,7 @@ async function runPipelineStreams({
 
   const failedResult = (url: string): PipelineResult => ({
     url,
-    cacheTtl: cacheTtlMap.get(url) ?? 604800,
     isRendered: false,
-    isAnalyzed: false,
     isCachedToR2: false,
     failure: { reason: "unknown" },
   });
@@ -742,19 +800,17 @@ async function runPipelineStreams({
       if (url === undefined) {
         break;
       }
-      const cacheTtl = cacheTtlMap.get(url) ?? 604800;
+      const cacheTtl = cacheTtlMap.get(url) ?? DEFAULT_CACHE_TTL;
 
       if (rendersOnBrowser >= REFRESH_EVERY_RENDERS) {
-        const b = browsers[slot];
-        if (b) await b.close().catch(() => {});
-        browsers[slot] = null;
+        await pool.recycle(slot);
         rendersOnBrowser = 0;
         logger.info(
           `[Browser] Stream ${slot} browser recycled after ${REFRESH_EVERY_RENDERS} renders`,
         );
       }
 
-      const browser = await ensureHealthy(slot);
+      const browser = await pool.ensureHealthy(slot);
       if (!browser) {
         pipelineResults.push(failedResult(url));
         continue;
@@ -778,11 +834,7 @@ async function runPipelineStreams({
           e,
         );
         // If the browser died mid-render, drop it so the next render relaunches.
-        const b = browsers[slot];
-        if (b && !b.connected) {
-          await b.close().catch(() => {});
-          browsers[slot] = null;
-        }
+        await pool.dropIfDisconnected(slot);
         pipelineResults.push(failedResult(url));
       }
       rendersOnBrowser++;
@@ -794,78 +846,15 @@ async function runPipelineStreams({
       Array.from({ length: concurrency }, (_, slot) => runStream(slot)),
     );
   } finally {
-    await Promise.all(
-      browsers.map((b) => (b ? b.close().catch(() => {}) : Promise.resolve())),
-    );
+    await pool.closeAll();
     logger.info(`[Browser] All stream browsers closed`);
-
-    logger.info(`[Summary] Render durations:`);
-    for (const r of pipelineResults) {
-      const duration =
-        r.renderDurationMs !== undefined
-          ? `${(r.renderDurationMs / 1000).toFixed(1)}s`
-          : `failed (${r.failure?.reason ?? "unknown"})`;
-      logger.info(`${INDENT}${extractPathFromUrl(r.url)} — ${duration}`);
-    }
-
-    const reqStats = requestStats.stats();
-    logger.info(
-      `[Summary] Outbound requests: ${reqStats.originRequests} to customer origin, ` +
-        `${reqStats.thirdPartyRequests} to third parties`,
-    );
-
-    const cacheStats = assetCache ? assetCache.stats() : null;
-    const cacheableTotal = cacheStats ? cacheStats.hits + cacheStats.misses : 0;
-    const hitRatePct =
-      cacheStats && cacheableTotal > 0
-        ? (cacheStats.hits / cacheableTotal) * 100
-        : 0;
-    if (cacheStats) {
-      const toMb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
-      logger.info(
-        `[AssetCache] ${cacheStats.hits}/${cacheableTotal} cacheable asset requests served from memory (${hitRatePct.toFixed(1)}%, ${toMb(cacheStats.servedBytes)} MB kept off origin); ` +
-          `${cacheStats.entryCount} unique assets cached (${toMb(cacheStats.storedBytes)} MB stored, ${cacheStats.skippedEntries} skipped by size caps)`,
-      );
-    }
-
-    // Machine-readable copy of the summary, next to the run's snapshots —
-    // lets cache-on/cache-off runs be diffed without scraping logs.
-    if (snapshotDir) {
-      const summary = {
-        finishedAt: DateTime.now().toUTC().toISO(),
-        concurrency,
-        assetCacheEnabled: assetCache !== null,
-        pages: pipelineResults.map((r) => ({
-          path: extractPathFromUrl(r.url),
-          url: r.url,
-          rendered: r.isRendered,
-          renderDurationMs: r.renderDurationMs ?? null,
-          failureReason: r.failure?.reason ?? null,
-        })),
-        outboundRequests: {
-          customerOrigin: reqStats.originRequests,
-          thirdParty: reqStats.thirdPartyRequests,
-        },
-        assetCache: cacheStats
-          ? {
-              hits: cacheStats.hits,
-              misses: cacheStats.misses,
-              hitRatePct: Number(hitRatePct.toFixed(1)),
-              servedBytes: cacheStats.servedBytes,
-              uniqueAssets: cacheStats.entryCount,
-              storedBytes: cacheStats.storedBytes,
-              skippedEntries: cacheStats.skippedEntries,
-            }
-          : null,
-      };
-      const summaryFile = join(snapshotDir, "summary.json");
-      try {
-        await writeFile(summaryFile, JSON.stringify(summary, null, 2));
-        logger.info(`[Summary] Written to ${summaryFile}`);
-      } catch (e) {
-        logger.warn(`[Summary] Failed to write ${summaryFile}`, e);
-      }
-    }
+    await reportRunSummary({
+      pipelineResults,
+      requestStats,
+      assetCache,
+      snapshotDir,
+      concurrency,
+    });
   }
 
   const resultMap = new Map<string, PipelineResult>();
@@ -899,8 +888,8 @@ async function main(): Promise<void> {
     return encodedUrl;
   });
 
-  let urlsToRender: string[] = [...urlsFromPaths];
-  let sitemapUrl: string = "";
+  let urlsToRender: string[];
+  let sitemapUrl: string;
   if (config.skipSitemapParsing) {
     logger.info(`SKIPPING SITEMAP PARSING: SKIP_SITEMAP_PARSING is true`);
     urlsToRender = urlsFromPaths;
@@ -962,31 +951,23 @@ main()
     const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
     const telegramChatId = process.env.TELEGRAM_CHAT_ID;
     if (telegramBotToken && telegramChatId) {
-      const telegramBot = new TelegramBot(telegramBotToken);
       try {
-        await Promise.race([
-          telegramBot.sendMessage(
-            telegramChatId,
-            `Failed to execute the job:\n\`\`\`json\n${escapeMarkdownV2Code(
-              JSON.stringify(
-                {
-                  google_cloud_execution_id:
-                    process.env.CLOUD_RUN_EXECUTION ?? "local",
-                  failReason:
-                    error instanceof Error ? error.message : String(error),
-                },
-                null,
-                2,
-              ),
-            )}\n\`\`\``.slice(0, 4096),
-            {
-              parse_mode: "MarkdownV2",
-            },
-          ),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Telegram send timeout")), 10000),
-          ),
-        ]);
+        await sendTelegramMessage({
+          botToken: telegramBotToken,
+          chatId: telegramChatId,
+          message: `Failed to execute the job:\n\`\`\`json\n${escapeMarkdownV2Code(
+            JSON.stringify(
+              {
+                google_cloud_execution_id:
+                  process.env.CLOUD_RUN_EXECUTION ?? "local",
+                failReason:
+                  error instanceof Error ? error.message : String(error),
+              },
+              null,
+              2,
+            ),
+          )}\n\`\`\``,
+        });
         logger.info(`Error sent to Telegram successfully`);
       } catch (e) {
         logger.error(

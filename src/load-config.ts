@@ -1,6 +1,6 @@
 import { isMemberOfEnum } from "./util";
 
-const DEFAULT_CACHE_TTL = 604800; // 7 days
+export const DEFAULT_CACHE_TTL = 604800; // 7 days
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
@@ -103,36 +103,25 @@ export interface Configuration {
   disableAssetCache: boolean;
 }
 
+function requireEnv(name: ConfigEnvVariables): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} is required`);
+  }
+  return value;
+}
+
+function boolEnv(name: ConfigEnvVariables, defaultValue: boolean): boolean {
+  const raw = process.env[name]?.toLowerCase();
+  return raw ? raw === "true" : defaultValue;
+}
+
 export function loadConfig(): Configuration {
-  // Run ID is required
-  const batchId = process.env[ConfigEnvVariables.BATCH_ID];
-  if (!batchId) {
-    throw new Error("BATCH_ID is required");
-  }
-
-  // User ID is required
-  const userId = process.env[ConfigEnvVariables.USER_ID];
-  if (!userId) {
-    throw new Error("USER_ID is required");
-  }
-
-  // Request source is required
-  const requestSource = process.env[ConfigEnvVariables.REQUEST_SOURCE];
-  if (!requestSource) {
-    throw new Error("REQUEST_SOURCE is required");
-  }
-
-  // Domain is required
-  const domain = process.env[ConfigEnvVariables.DOMAIN];
-  if (!domain) {
-    throw new Error("DOMAIN is required");
-  }
-
-  // Origin host is required
-  const originHost = process.env[ConfigEnvVariables.ORIGIN_HOST];
-  if (!originHost) {
-    throw new Error("ORIGIN_HOST is required");
-  }
+  const batchId = requireEnv(ConfigEnvVariables.BATCH_ID);
+  const userId = requireEnv(ConfigEnvVariables.USER_ID);
+  const requestSource = requireEnv(ConfigEnvVariables.REQUEST_SOURCE);
+  const domain = requireEnv(ConfigEnvVariables.DOMAIN);
+  const originHost = requireEnv(ConfigEnvVariables.ORIGIN_HOST);
 
   // Canonical domain is optional; falls back to DOMAIN if not set
   const canonicalDomain =
@@ -193,23 +182,10 @@ export function loadConfig(): Configuration {
     );
   }
   // Cloudflare credentials and cache configuration are required
-  const cfAccountId = process.env[ConfigEnvVariables.CF_ACCOUNT_ID];
-  if (!cfAccountId) {
-    throw new Error("CF_ACCOUNT_ID is required");
-  }
-  const r2AccessKeyId = process.env[ConfigEnvVariables.R2_ACCESS_KEY_ID];
-  if (!r2AccessKeyId) {
-    throw new Error("R2_ACCESS_KEY_ID is required");
-  }
-  const r2SecretAccessKey =
-    process.env[ConfigEnvVariables.R2_SECRET_ACCESS_KEY];
-  if (!r2SecretAccessKey) {
-    throw new Error("R2_SECRET_ACCESS_KEY is required");
-  }
-  const r2BucketName = process.env[ConfigEnvVariables.R2_BUCKET_NAME];
-  if (!r2BucketName) {
-    throw new Error("R2_BUCKET_NAME is required");
-  }
+  const cfAccountId = requireEnv(ConfigEnvVariables.CF_ACCOUNT_ID);
+  const r2AccessKeyId = requireEnv(ConfigEnvVariables.R2_ACCESS_KEY_ID);
+  const r2SecretAccessKey = requireEnv(ConfigEnvVariables.R2_SECRET_ACCESS_KEY);
+  const r2BucketName = requireEnv(ConfigEnvVariables.R2_BUCKET_NAME);
   // User agent is optional, default to default user agent if not set
   const userAgent =
     process.env[ConfigEnvVariables.USER_AGENT] ?? DEFAULT_USER_AGENT;
@@ -229,16 +205,13 @@ export function loadConfig(): Configuration {
   }
 
   // Whether to skip cache sync is optional, default to true if not set
-  const skipCacheSyncRaw =
-    process.env[ConfigEnvVariables.SKIP_CACHE_SYNC]?.toLowerCase();
-  const skipCacheSync = skipCacheSyncRaw ? skipCacheSyncRaw === "true" : true;
+  const skipCacheSync = boolEnv(ConfigEnvVariables.SKIP_CACHE_SYNC, true);
 
   // Whether to skip sitemap parsing is optional, default to false if not set
-  const skipSitemapParsingRaw =
-    process.env[ConfigEnvVariables.SKIP_SITEMAP_PARSING]?.toLowerCase();
-  const skipSitemapParsing = skipSitemapParsingRaw
-    ? skipSitemapParsingRaw === "true"
-    : false;
+  const skipSitemapParsing = boolEnv(
+    ConfigEnvVariables.SKIP_SITEMAP_PARSING,
+    false,
+  );
 
   // Retry options are optional
   const retryOptions = process.env[ConfigEnvVariables.RETRY_OPTIONS];
@@ -250,11 +223,10 @@ export function loadConfig(): Configuration {
   const outputDir = process.env[ConfigEnvVariables.OUTPUT_DIR] || undefined;
 
   // Whether to disable the asset cache is optional, default to false if not set
-  const disableAssetCacheRaw =
-    process.env[ConfigEnvVariables.DISABLE_ASSET_CACHE]?.toLowerCase();
-  const disableAssetCache = disableAssetCacheRaw
-    ? disableAssetCacheRaw === "true"
-    : false;
+  const disableAssetCache = boolEnv(
+    ConfigEnvVariables.DISABLE_ASSET_CACHE,
+    false,
+  );
 
   return {
     batchId,

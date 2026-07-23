@@ -176,89 +176,30 @@ export class SeoAnalyzer {
     return metaTags;
   }
 
+  private static readonly OG_TAG_SELECTORS: ReadonlyArray<
+    [Exclude<keyof OgTags, "favicon">, string]
+  > = [
+    ["ogTitle", "meta[property='og:title']"],
+    ["ogDescription", "meta[property='og:description']"],
+    ["ogImage", "meta[property='og:image']"],
+    ["ogUrl", "meta[property='og:url']"],
+    ["ogType", "meta[property='og:type']"],
+    ["ogSiteName", "meta[property='og:site_name']"],
+    ["twitterCard", "meta[name='twitter:card']"],
+    ["twitterTitle", "meta[name='twitter:title']"],
+    ["twitterDescription", "meta[name='twitter:description']"],
+    ["twitterImage", "meta[name='twitter:image']"],
+  ];
+
   private extractOgTags({ root }: { root: HTMLElement }): OgTags {
     const ogTags: OgTags = {};
-    // title
-    const ogTitle = root
-      .querySelector("meta[property='og:title']")
-      ?.getAttribute("content");
-    if (ogTitle) {
-      ogTags.ogTitle = ogTitle;
+    for (const [key, selector] of SeoAnalyzer.OG_TAG_SELECTORS) {
+      const content = root.querySelector(selector)?.getAttribute("content");
+      if (content) {
+        ogTags[key] = content;
+      }
     }
 
-    // description
-    const ogDescription = root
-      .querySelector("meta[property='og:description']")
-      ?.getAttribute("content");
-    if (ogDescription) {
-      ogTags.ogDescription = ogDescription;
-    }
-
-    // image
-    const ogImage = root
-      .querySelector("meta[property='og:image']")
-      ?.getAttribute("content");
-    if (ogImage) {
-      ogTags.ogImage = ogImage;
-    }
-
-    // url
-    const ogUrl = root
-      .querySelector("meta[property='og:url']")
-      ?.getAttribute("content");
-    if (ogUrl) {
-      ogTags.ogUrl = ogUrl;
-    }
-
-    // type
-    const ogType = root
-      .querySelector("meta[property='og:type']")
-      ?.getAttribute("content");
-    if (ogType) {
-      ogTags.ogType = ogType;
-    }
-
-    // site name
-    const ogSiteName = root
-      .querySelector("meta[property='og:site_name']")
-      ?.getAttribute("content");
-    if (ogSiteName) {
-      ogTags.ogSiteName = ogSiteName;
-    }
-
-    // twitter card
-    const twitterCard = root
-      .querySelector("meta[name='twitter:card']")
-      ?.getAttribute("content");
-    if (twitterCard) {
-      ogTags.twitterCard = twitterCard;
-    }
-
-    // twitter title
-    const twitterTitle = root
-      .querySelector("meta[name='twitter:title']")
-      ?.getAttribute("content");
-    if (twitterTitle) {
-      ogTags.twitterTitle = twitterTitle;
-    }
-
-    // twitter description
-    const twitterDescription = root
-      .querySelector("meta[name='twitter:description']")
-      ?.getAttribute("content");
-    if (twitterDescription) {
-      ogTags.twitterDescription = twitterDescription;
-    }
-
-    // twitter image
-    const twitterImage = root
-      .querySelector("meta[name='twitter:image']")
-      ?.getAttribute("content");
-    if (twitterImage) {
-      ogTags.twitterImage = twitterImage;
-    }
-
-    // favicon
     const favicon = (
       root.querySelector("link[rel='icon']") ||
       root.querySelector("link[rel='shortcut icon']")

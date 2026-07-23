@@ -96,8 +96,8 @@ export function sanitizeHtml({
     for (const selector of UNIQUE_TAG_SELECTORS) {
       deduplicateBySelector(head, selector);
     }
-    deduplicateOgProperties(head);
-    deduplicateTwitterProperties(head);
+    deduplicateMetaByAttrPrefix(head, "property", "og:");
+    deduplicateMetaByAttrPrefix(head, "name", "twitter:");
 
     // -------------------------------------------------------------------------
     // Internal param cleaning (migrated from RenderEngine)
@@ -329,19 +329,24 @@ function deduplicateBySelector(head: HTMLElement, selector: string): void {
 }
 
 /**
- * Dynamically discover all <meta property="og:*"> tags and deduplicate
- * each unique property value (og:title, og:image, og:image:alt, etc.).
+ * Dynamically discover all meta tags whose identifying attribute starts with
+ * `prefix` (og:* via `property`, twitter:* via `name`) and deduplicate each
+ * unique value (og:title, og:image:alt, twitter:card, etc.).
  */
-function deduplicateOgProperties(head: HTMLElement): void {
-  const ogMetas = head.querySelectorAll('meta[property^="og:"]');
+function deduplicateMetaByAttrPrefix(
+  head: HTMLElement,
+  attr: "property" | "name",
+  prefix: string,
+): void {
+  const metas = head.querySelectorAll(`meta[${attr}^="${prefix}"]`);
   const groups = new Map<string, HTMLElement[]>();
 
-  for (const el of ogMetas) {
-    const prop = el.getAttribute("property")!;
-    if (!groups.has(prop)) {
-      groups.set(prop, []);
+  for (const el of metas) {
+    const key = el.getAttribute(attr)!;
+    if (!groups.has(key)) {
+      groups.set(key, []);
     }
-    groups.get(prop)!.push(el);
+    groups.get(key)!.push(el);
   }
 
   for (const [, elements] of groups) {
@@ -371,31 +376,6 @@ function pickMetaWinner(elements: HTMLElement[]): HTMLElement {
   const rh = elements.find((el) => el.getAttribute("data-rh") === "true");
   if (rh) return rh;
   return elements[elements.length - 1]!;
-}
-
-/**
- * Dynamically discover all <meta name="twitter:*"> tags and deduplicate
- * each unique name value (twitter:card, twitter:image, twitter:site, etc.).
- */
-function deduplicateTwitterProperties(head: HTMLElement): void {
-  const twitterMetas = head.querySelectorAll('meta[name^="twitter:"]');
-  const groups = new Map<string, HTMLElement[]>();
-
-  for (const el of twitterMetas) {
-    const name = el.getAttribute("name")!;
-    if (!groups.has(name)) {
-      groups.set(name, []);
-    }
-    groups.get(name)!.push(el);
-  }
-
-  for (const [, elements] of groups) {
-    if (elements.length <= 1) continue;
-    const winner = pickMetaWinner(elements);
-    for (const el of elements) {
-      if (el !== winner) el.remove();
-    }
-  }
 }
 
 // -- Internal param cleaning --
@@ -804,18 +784,18 @@ function reorderHeadTags(head: HTMLElement): void {
   //   6: everything else
 
   const children = [...head.childNodes];
-  const htmlByBucket: string[][] = [[], [], [], [], [], [], []];
+  const buckets: Node[][] = [[], [], [], [], [], [], []];
 
   for (const child of children) {
-    const html = (child as HTMLElement).outerHTML ?? child.toString();
-    const bucket = classifyHeadChild(child as HTMLElement);
-    htmlByBucket[bucket]!.push(html);
+    buckets[classifyHeadChild(child as HTMLElement)]!.push(child);
     child.remove();
   }
 
-  // Re-insert in bucket order
-  const combined = htmlByBucket.flat().join("");
-  head.insertAdjacentHTML("afterbegin", combined);
+  // Re-append the original nodes in bucket order — moving nodes directly
+  // avoids a serialize/re-parse round trip that could alter odd content.
+  for (const node of buckets.flat()) {
+    head.appendChild(node);
+  }
 }
 
 /** Classify a head child node into a sort-priority bucket (0–6). */

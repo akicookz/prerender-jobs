@@ -3,10 +3,19 @@ import { AppLogger } from "../logger";
 import { buildSnapshotObjectKey } from "./kv-key-utils";
 import { CACHE_VERSION, KvRecord } from "./type";
 import { PageSeoAnalysis } from "../seo-analyzer/type";
+import { sha256Hex } from "../util";
 import {
   renderDiagnosticsToMetadata,
   type RenderDiagnostics,
 } from "../render-engine";
+
+export interface R2CacheConfig {
+  cfAccountId: string;
+  r2AccessKeyId: string;
+  r2SecretAccessKey: string;
+  r2BucketName: string;
+  cacheTtl: number;
+}
 
 export class R2Loader {
   private readonly _targetUrl: string;
@@ -15,13 +24,7 @@ export class R2Loader {
   private readonly _userAgent: string;
   private readonly _diagnostics: RenderDiagnostics | undefined;
   private readonly _logger: AppLogger;
-  private readonly _r2CacheConfig: {
-    cfAccountId: string;
-    r2AccessKeyId: string;
-    r2SecretAccessKey: string;
-    r2BucketName: string;
-    cacheTtl: number;
-  };
+  private readonly _r2CacheConfig: R2CacheConfig;
 
   static register({
     targetUrl,
@@ -36,13 +39,7 @@ export class R2Loader {
     seoAnalysis: PageSeoAnalysis;
     userAgent: string;
     diagnostics?: RenderDiagnostics;
-    r2CacheConfig: {
-      cfAccountId: string;
-      r2AccessKeyId: string;
-      r2SecretAccessKey: string;
-      r2BucketName: string;
-      cacheTtl: number;
-    };
+    r2CacheConfig: R2CacheConfig;
   }): R2Loader {
     return new R2Loader(
       targetUrl,
@@ -60,13 +57,7 @@ export class R2Loader {
     seoAnalysis: PageSeoAnalysis,
     userAgent: string,
     diagnostics: RenderDiagnostics | undefined,
-    r2CacheConfig: {
-      cfAccountId: string;
-      r2AccessKeyId: string;
-      r2SecretAccessKey: string;
-      r2BucketName: string;
-      cacheTtl: number;
-    },
+    r2CacheConfig: R2CacheConfig,
   ) {
     this._targetUrl = targetUrl;
     this._html = html;
@@ -79,29 +70,24 @@ export class R2Loader {
     });
   }
 
-  async uploadR2Object(): Promise<
-    | {
-        r2Synced: false;
-      }
-    | {
-        r2Synced: true;
-        kvRecord: KvRecord;
-        objectKey: string;
-      }
-  > {
+  async uploadR2Object(): Promise<{ r2Synced: boolean }> {
     try {
       new URL(this._targetUrl);
     } catch (e) {
       this._logger.error(
         `Invalid URL: ${e instanceof Error ? e.message : String(e)}`,
       );
-      return {
-        r2Synced: false,
-      };
+      return { r2Synced: false };
     }
 
-    const digest = await this.sha256Hex(this._html);
-    const objectKey = await this.buildObjectKey();
+    const digest = await sha256Hex(this._html);
+    // Deterministic per page: derived from the KV key (the page identity this
+    // job and the worker agree on), so every re-render overwrites the same
+    // object instead of accumulating timestamped copies. The lovablehtml
+    // worker's buildObjectKey mirrors this derivation — keep in sync.
+    const objectKey = await buildSnapshotObjectKey({
+      targetUrl: this._targetUrl,
+    });
     const bodyBytes = new TextEncoder().encode(this._html);
     const kvRecord = this.buildKvRecord({
       digest,
@@ -118,15 +104,9 @@ export class R2Loader {
       });
     } catch (e) {
       this._logger.error("Failed to upload R2 object:", e);
-      return {
-        r2Synced: false,
-      };
+      return { r2Synced: false };
     }
-    return {
-      r2Synced: true,
-      kvRecord,
-      objectKey,
-    };
+    return { r2Synced: true };
   }
 
   private get r2Client(): S3Client {
@@ -215,29 +195,5 @@ export class R2Loader {
         ? renderDiagnosticsToMetadata(this._diagnostics)
         : {}),
     };
-  }
-
-  /**
-   * Deterministic per page: derived from the KV key (the page identity this
-   * job and the worker agree on), so every re-render overwrites the same
-   * object instead of accumulating timestamped copies. The lovablehtml
-   * worker's buildObjectKey mirrors this derivation — keep in sync. The host
-   * is normalized like buildKvKey's domain segment so www-preferred domains
-   * land on the same key the worker derives.
-   */
-  private async buildObjectKey(): Promise<string> {
-    return buildSnapshotObjectKey({ targetUrl: this._targetUrl });
-  }
-
-  private async sha256Hex(input: string): Promise<string> {
-    const data = new TextEncoder().encode(input);
-    const digest = await crypto.subtle.digest("SHA-256", data);
-    const bytes = new Uint8Array(digest);
-    let hex = "";
-    for (let i = 0; i < bytes.length; i++) {
-      const h = bytes[i]!.toString(16).padStart(2, "0");
-      hex += h;
-    }
-    return hex;
   }
 }
