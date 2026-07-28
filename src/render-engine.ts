@@ -126,6 +126,11 @@ export function renderDiagnosticsToMetadata(
 
 type ReadinessState = {
   appSignaled: boolean;
+  // The page defined window.prerenderReady/htmlSnapshot (any value). Once
+  // defined, the app owns readiness: heuristic capture paths are suppressed
+  // and only the flag flipping true (or the hard timeout failing the render)
+  // ends the wait.
+  flagDefined: boolean;
   networkIdleSince: number | null;
   domStableSince: number | null;
   heartbeatAtNetworkIdle: number | null;
@@ -801,17 +806,24 @@ export class RenderEngine {
     }
   }
 
-  private async checkAppSignal({ page }: { page: Page }): Promise<boolean> {
+  private async checkAppFlag({
+    page,
+  }: {
+    page: Page;
+  }): Promise<{ defined: boolean; ready: boolean }> {
     return this.evaluateWithTimeout(
       page,
       () => {
         // @ts-expect-error - custom window properties
-        const ready = window.prerenderReady as boolean;
+        const ready = window.prerenderReady as unknown;
         // @ts-expect-error - custom window properties
-        const snapshot = window.htmlSnapshot as boolean;
-        return ready === true || snapshot === true;
+        const snapshot = window.htmlSnapshot as unknown;
+        return {
+          defined: ready !== undefined || snapshot !== undefined,
+          ready: ready === true || snapshot === true,
+        };
       },
-      () => false,
+      () => ({ defined: false, ready: false }),
     );
   }
 
@@ -953,6 +965,7 @@ export class RenderEngine {
     const startedAt = Date.now();
     const state: ReadinessState = {
       appSignaled: false,
+      flagDefined: false,
       networkIdleSince: null,
       domStableSince: null,
       heartbeatAtNetworkIdle: null,
@@ -998,8 +1011,20 @@ export class RenderEngine {
         const now = Date.now();
         const elapsed = now - startedAt;
 
-        // Hard timeout — snapshot regardless of metadata
+        // Hard timeout — snapshot regardless of metadata, unless the app owns
+        // readiness and never signaled: capturing then would store a page the
+        // app declared incomplete, overwriting a previously good snapshot.
+        // Failing instead keeps the old snapshot and routes the path into the
+        // batch retry machinery.
         if (elapsed >= HARD_TIMEOUT_MS) {
+          if (state.flagDefined && !state.appSignaled) {
+            return settleReject(
+              new RenderFailureError(
+                `prerenderReady still false after ${HARD_TIMEOUT_MS}ms for ${this._url}`,
+                { reason: "not_ready" },
+              ),
+            );
+          }
           this._logger.debug(
             "[Prerender] Hard timeout reached, taking snapshot",
           );
@@ -1017,11 +1042,20 @@ export class RenderEngine {
         // The app can set prerenderReady before its own data fetch resolves
         // (the skeleton race), so we still wait for first-party requests to go
         // quiet below before treating the signal as ready.
-        if (!state.appSignaled && (await this.checkAppSignal({ page }))) {
-          state.appSignaled = true;
-          this._logger.debug(
-            "[Prerender] App signaled ready via prerenderReady/htmlSnapshot",
-          );
+        if (!state.appSignaled) {
+          const flag = await this.checkAppFlag({ page });
+          if (flag.defined && !state.flagDefined) {
+            state.flagDefined = true;
+            this._logger.debug(
+              "[Prerender] App defined a readiness flag; heuristic capture disabled until it signals",
+            );
+          }
+          if (flag.ready) {
+            state.appSignaled = true;
+            this._logger.debug(
+              "[Prerender] App signaled ready via prerenderReady/htmlSnapshot",
+            );
+          }
         }
 
         if (!signalReady) {
@@ -1068,6 +1102,12 @@ export class RenderEngine {
           // Trust the app signal only once first-party requests have gone
           // quiet — by then React has painted the content. DOM stability isn't
           // required here because the app has explicitly declared readiness.
+          // A defined-but-false flag means the app is mid-load by its own
+          // account: the stability fallbacks below would capture its loading
+          // shell, so they stay disabled until the flag flips (or the hard
+          // timeout above fails the render).
+          const awaitingAppSignal = state.flagDefined && !state.appSignaled;
+
           if (state.appSignaled && networkStable) {
             signalReady = true;
             signalReason = "app_signaled";
@@ -1075,7 +1115,7 @@ export class RenderEngine {
             this._logger.debug(
               `[Prerender] App signaled and network idle for ${networkIdleDuration}ms`,
             );
-          } else if (networkStable && domStable) {
+          } else if (!awaitingAppSignal && networkStable && domStable) {
             signalReady = true;
             signalReason = `network_and_dom_stable (network idle ${networkIdleDuration}ms, DOM stable ${domIdleTime}ms)`;
             signalFiredAt = now;
@@ -1083,7 +1123,12 @@ export class RenderEngine {
 
           const MIN_WAIT_MS = 500;
           const DOM_EXTENDED_WAIT_MS = 3000;
-          if (elapsed >= MIN_WAIT_MS && networkStable) {
+          if (
+            !signalReady &&
+            !awaitingAppSignal &&
+            elapsed >= MIN_WAIT_MS &&
+            networkStable
+          ) {
             if (elapsed >= MIN_WAIT_MS + DOM_EXTENDED_WAIT_MS) {
               signalReady = true;
               signalReason = "network_stable_dom_timeout";
