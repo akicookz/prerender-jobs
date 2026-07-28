@@ -1018,24 +1018,19 @@ export class RenderEngine {
         const now = Date.now();
         const elapsed = now - startedAt;
 
-        // Hard timeout — snapshot regardless of metadata, unless the app owns
-        // readiness and never signaled: capturing then would store a page the
-        // app declared incomplete, overwriting a previously good snapshot.
-        // Failing instead keeps the old snapshot and routes the path into the
-        // batch retry machinery.
+        // Hard timeout — snapshot regardless of metadata. A flag-defined page
+        // that never signaled still captures here (a misconfigured flag must
+        // not starve the page of snapshots forever), but under a distinct
+        // reason so these captures stay identifiable in snapshot metadata.
         if (elapsed >= HARD_TIMEOUT_MS) {
-          if (state.flagDefined && !state.appSignaled) {
-            return settleReject(
-              new RenderFailureError(
-                `prerenderReady still false after ${HARD_TIMEOUT_MS}ms for ${this._url}`,
-                { reason: "not_ready" },
-              ),
-            );
-          }
           this._logger.debug(
             "[Prerender] Hard timeout reached, taking snapshot",
           );
-          return settleResolve("hard_timeout");
+          return settleResolve(
+            state.flagDefined && !state.appSignaled
+              ? "hard_timeout_not_ready"
+              : "hard_timeout",
+          );
         }
 
         // ── Check metadata (title) every tick ──

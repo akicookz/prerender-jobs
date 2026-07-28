@@ -3,7 +3,6 @@ export const PRERENDER_FAILURE_CODES = [
   "too_many_redirects",
   "navigation_loop",
   "sync_failed",
-  "not_ready",
   "unknown",
 ] as const;
 export type PrerenderFailureCode = (typeof PRERENDER_FAILURE_CODES)[number];

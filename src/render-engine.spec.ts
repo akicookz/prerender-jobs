@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Browser, HTTPRequest, Page } from "puppeteer-core";
-import { RenderFailureError } from "./prerender-failure";
 import { RenderEngine } from "./render-engine";
 
 type FakeWindow = {
@@ -88,14 +87,13 @@ describe("waitForPageReady readiness-flag contract", () => {
     await expect(ready).resolves.toBe("app_signaled");
   });
 
-  it("rejects with not_ready when prerenderReady stays false through the hard timeout", async () => {
+  it("captures at hard timeout when prerenderReady stays false, with a distinct reason", async () => {
     installFakeDom({ prerenderReady: false });
     const ready = waitForPageReady(makeEngine());
     ready.catch(() => void 0);
 
     await vi.advanceTimersByTimeAsync(31_000);
 
-    await expect(ready).rejects.toBeInstanceOf(RenderFailureError);
-    await expect(ready).rejects.toMatchObject({ reason: "not_ready" });
+    await expect(ready).resolves.toBe("hard_timeout_not_ready");
   });
 });
