@@ -493,7 +493,7 @@ async function runPipeline({
         url: renderResult.finalUrl,
         canonicalDomain: config.canonicalDomain,
       });
-      logger.debug(`Sanitized HTML: ${sanitizedHtml}`);
+      // logger.debug(`Sanitized HTML: ${sanitizedHtml}`);
     } catch (e) {
       logger.error(
         `${INDENT}${INDENT}↳ ${path} - HTML sanitization failed fallback to original HTML`,

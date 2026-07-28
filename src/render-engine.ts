@@ -518,6 +518,13 @@ export class RenderEngine {
     if (this._assetCache) {
       page.on("response", (res: HTTPResponse) => {
         this.maybeCacheAsset(res).catch(() => void 0);
+        const status = res.status();
+        if (status < 400) return;
+        const url = res.url();
+        if (this.isIgnoredHost(getHostname(url) ?? "")) return;
+        this._logger.debug(
+          `[ResponseError] ${status} ${res.request().resourceType()} ${url}`,
+        );
       });
     }
 
