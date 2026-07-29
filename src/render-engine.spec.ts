@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Browser, HTTPRequest, Page } from "puppeteer-core";
-import { RenderEngine } from "./render-engine";
+import type { Browser, HTTPRequest, HTTPResponse, Page } from "puppeteer-core";
+import { isDegradedRender, RenderEngine } from "./render-engine";
 
 type FakeWindow = {
   prerenderReady?: boolean;
@@ -95,5 +95,89 @@ describe("waitForPageReady readiness-flag contract", () => {
     await vi.advanceTimersByTimeAsync(31_000);
 
     await expect(ready).resolves.toBe("hard_timeout_not_ready");
+  });
+});
+
+function fakeResponse(
+  status: number,
+  resourceType: string,
+  url: string,
+): HTTPResponse {
+  return {
+    status: () => status,
+    url: () => url,
+    request: () => ({ resourceType: () => resourceType }),
+  } as unknown as HTTPResponse;
+}
+
+describe("throttled-request diagnostics", () => {
+  function countThrottled(responses: HTTPResponse[]): number {
+    const engine = makeEngine();
+    const handlers: Record<string, ((arg: never) => void)[]> = {};
+    const fakePage = {
+      on: (event: string, handler: (arg: never) => void) => {
+        (handlers[event] ??= []).push(handler);
+      },
+    } as unknown as Page;
+    const diagnostics = {
+      startedAt: Date.now(),
+      failedRequests: [],
+      consoleErrors: [],
+      pageErrors: [],
+      throttledRequestCount: 0,
+    };
+    (
+      engine as unknown as {
+        attachDebugListeners(page: Page, d: typeof diagnostics): void;
+      }
+    ).attachDebugListeners(fakePage, diagnostics);
+    for (const res of responses) {
+      for (const h of handlers["response"] ?? []) h(res as never);
+    }
+    return diagnostics.throttledRequestCount;
+  }
+
+  it("counts 429s on xhr/fetch data calls", () => {
+    const n = countThrottled([
+      fakeResponse(429, "xhr", "https://base44.app/api/apps/x/entities/SiteConfig"),
+      fakeResponse(429, "fetch", "https://example.com/api/data"),
+    ]);
+    expect(n).toBe(2);
+  });
+
+  it("ignores successes, non-data resource types, and ignored hosts", () => {
+    const n = countThrottled([
+      fakeResponse(200, "xhr", "https://base44.app/api/apps/x/entities/SiteConfig"),
+      fakeResponse(429, "other", "https://example.com/favicon.ico"),
+      fakeResponse(404, "image", "https://example.com/hero.png"),
+      fakeResponse(429, "xhr", "https://api.mixpanel.com/track"),
+    ]);
+    expect(n).toBe(0);
+  });
+});
+
+describe("isDegradedRender", () => {
+  it("flags hard-timeout captures and throttled renders, not clean ones", () => {
+    expect(
+      isDegradedRender({ readyReason: "app_signaled", throttledRequestCount: 0 }),
+    ).toBe(false);
+    expect(
+      isDegradedRender({
+        readyReason: "network_and_dom_stable (network idle 800ms, DOM stable 600ms)",
+        throttledRequestCount: 0,
+      }),
+    ).toBe(false);
+    expect(
+      isDegradedRender({ readyReason: "hard_timeout", throttledRequestCount: 0 }),
+    ).toBe(true);
+    expect(
+      isDegradedRender({
+        readyReason: "hard_timeout_not_ready",
+        throttledRequestCount: 0,
+      }),
+    ).toBe(true);
+    expect(
+      isDegradedRender({ readyReason: "app_signaled", throttledRequestCount: 3 }),
+    ).toBe(true);
   });
 });

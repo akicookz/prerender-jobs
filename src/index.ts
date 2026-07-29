@@ -23,7 +23,11 @@ import {
   type Configuration,
 } from "./load-config";
 import { AppLogger, INDENT } from "./logger";
-import { RenderEngine, type RenderResult } from "./render-engine";
+import {
+  isDegradedRender,
+  RenderEngine,
+  type RenderResult,
+} from "./render-engine";
 import { RequestStats } from "./request-stats";
 import { SeoAnalyzer } from "./seo-analyzer/index";
 import type { PageSeoAnalysis } from "./seo-analyzer/type";
@@ -47,6 +51,10 @@ interface PipelineResult {
   isCachedToR2: boolean;
   /** Wall-clock of the successful render attempt, from RenderDiagnostics. */
   renderDurationMs?: number;
+  /** What ended the readiness wait, from RenderDiagnostics. */
+  readyReason?: string;
+  /** 429s on data calls during the render, from RenderDiagnostics. */
+  throttledRequestCount?: number;
   /** Why the path failed — unset on success. */
   failure?: PrerenderFailureDetail;
 }
@@ -72,6 +80,10 @@ interface ReportResultBody {
   urls_rendered: number;
   urls_synced_r2: number;
   urls_synced_kv: number;
+  /** Rendered paths captured at hard timeout or with throttled data calls. */
+  degraded_path_count: number;
+  /** Rendered-path count per normalized readiness reason. */
+  ready_reasons: Record<string, number>;
   sitemap_url: string;
   sitemap_filter: string;
   started_at: string;
@@ -223,6 +235,21 @@ async function reportResult({
   );
   const resolvePath = (url: string) =>
     urlToOriginalPathMap.get(url) ?? extractPathFromUrl(url);
+  const readyReasons: Record<string, number> = {};
+  let degradedPathCount = 0;
+  for (const r of urlResultMap.values()) {
+    if (!r.isRendered) continue;
+    const reason = (r.readyReason ?? "").split(" ")[0] || "unknown";
+    readyReasons[reason] = (readyReasons[reason] ?? 0) + 1;
+    if (
+      isDegradedRender({
+        readyReason: r.readyReason ?? "",
+        throttledRequestCount: r.throttledRequestCount ?? 0,
+      })
+    ) {
+      degradedPathCount++;
+    }
+  }
   const resultBody: ReportResultBody = {
     batch_id: config.batchId,
     user_id: userId,
@@ -235,6 +262,8 @@ async function reportResult({
     urls_synced_r2: countR2Synced,
     // KV sync was removed; the field stays 0 to keep the webhook contract.
     urls_synced_kv: 0,
+    degraded_path_count: degradedPathCount,
+    ready_reasons: readyReasons,
     sitemap_url: sitemapUrl,
     sitemap_filter: sitemapFilter,
     started_at: DateTime.fromMillis(startedAt).toUTC().toISO()!,
@@ -550,6 +579,8 @@ async function runPipeline({
   }
   result.isRendered = true;
   result.renderDurationMs = renderResult.diagnostics?.durationMs;
+  result.readyReason = renderResult.diagnostics?.readyReason;
+  result.throttledRequestCount = renderResult.diagnostics?.throttledRequestCount;
 
   // Detect SEO metadata lost during sanitization. Both inputs carry the same
   // placeholders, so property-presence comparisons stay accurate.

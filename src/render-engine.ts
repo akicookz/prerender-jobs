@@ -45,6 +45,9 @@ export type RenderDiagnostics = {
   pendingRequests: string[];
   consoleErrors: string[];
   pageErrors: string[];
+  // 429 responses on xhr/fetch data calls (non-ignored hosts) during the
+  // render — the origin-under-pressure signal batch reports aggregate.
+  throttledRequestCount: number;
 };
 
 export interface RenderResult {
@@ -63,7 +66,23 @@ type DiagnosticsCollector = {
   failedRequests: { url: string; error: string }[];
   consoleErrors: string[];
   pageErrors: string[];
+  throttledRequestCount: number;
 };
+
+/**
+ * A render whose page had to be captured without the app's ready signal, or
+ * whose data calls were rate-limited mid-render. Batch reports count these so
+ * the worker can step an overloaded domain's concurrency down.
+ */
+export function isDegradedRender({
+  readyReason,
+  throttledRequestCount,
+}: {
+  readyReason: string;
+  throttledRequestCount: number;
+}): boolean {
+  return readyReason.startsWith("hard_timeout") || throttledRequestCount > 0;
+}
 
 // R2 caps total object metadata at 8192 bytes, and values must be strings.
 // Keep the diagnostics blobs well under that (worst case here is ~3KB across
@@ -121,6 +140,7 @@ export function renderDiagnosticsToMetadata(
       d.pageErrors.map((s) => trunc(s, 200)),
       800,
     ),
+    renderThrottledRequestCount: String(d.throttledRequestCount),
   };
 }
 
@@ -226,6 +246,7 @@ export class RenderEngine {
         failedRequests: [],
         consoleErrors: [],
         pageErrors: [],
+        throttledRequestCount: 0,
       };
       this.attachDebugListeners(page, diagnostics);
 
@@ -321,6 +342,27 @@ export class RenderEngine {
           } catch {
             // ignore
           }
+        }
+      });
+      page.on("response", (res: HTTPResponse) => {
+        try {
+          const status = res.status();
+          if (status < 400) return;
+          const url = res.url();
+          if (this.isIgnoredHost(getHostname(url) ?? "")) return;
+          this._logger.debug(
+            `[ResponseError] ${status} ${res.request().resourceType()} ${url}`,
+          );
+          const resourceType = res.request().resourceType();
+          if (
+            status === 429 &&
+            (resourceType === "xhr" || resourceType === "fetch") &&
+            !this.isIgnoredPath(new URL(url).pathname)
+          ) {
+            diagnostics.throttledRequestCount++;
+          }
+        } catch {
+          // ignore
         }
       });
       page.on("requestfailed", (req: HTTPRequest) => {
@@ -518,13 +560,6 @@ export class RenderEngine {
     if (this._assetCache) {
       page.on("response", (res: HTTPResponse) => {
         this.maybeCacheAsset(res).catch(() => void 0);
-        const status = res.status();
-        if (status < 400) return;
-        const url = res.url();
-        if (this.isIgnoredHost(getHostname(url) ?? "")) return;
-        this._logger.debug(
-          `[ResponseError] ${status} ${res.request().resourceType()} ${url}`,
-        );
       });
     }
 
@@ -602,6 +637,7 @@ export class RenderEngine {
       diagnostics: {
         readyReason,
         durationMs: Date.now() - diagnostics.startedAt,
+        throttledRequestCount: diagnostics.throttledRequestCount,
         failedRequests: diagnostics.failedRequests,
         pendingRequests: Array.from(firstPartyReqPending, (req) => req.url()),
         consoleErrors: diagnostics.consoleErrors,
