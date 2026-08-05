@@ -20,6 +20,11 @@ const TRACKING_PARAMS = new Set([
   "yclid",
   "_gl",
   "_ga",
+  "gtm_latency",
+  "dclid",
+  "gclsrc",
+  "gad_source",
+  "srsltid",
 ]);
 
 function isTrackingParam(name: string): boolean {
