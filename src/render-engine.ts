@@ -909,6 +909,8 @@ export class RenderEngine {
             // @ts-expect-error - custom window properties
             window.__TO_HTML = true;
             // @ts-expect-error - custom window properties
+            window.__ENCITED__ = { visit: "render" };
+            // @ts-expect-error - custom window properties
             window.__lastDomChange = Date.now();
 
             // Main-thread heartbeat. A renderer starved of CPU (e.g. module
