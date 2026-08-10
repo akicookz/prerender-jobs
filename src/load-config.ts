@@ -17,9 +17,6 @@ enum ConfigEnvVariables {
   BATCH_ID = "BATCH_ID",
   USER_ID = "USER_ID",
   URL_BASE = "URL_BASE",
-  // Legacy spelling of URL_BASE (full https:// URL) — accepted as a fallback
-  // until every caller injects URL_BASE
-  BASE_URL = "BASE_URL",
   PATHS_LIST = "PATHS_LIST",
   DOMAIN = "DOMAIN",
   CF_ACCOUNT_ID = "CF_ACCOUNT_ID",
@@ -129,12 +126,8 @@ export function loadConfig(): Configuration {
   const canonicalDomain =
     process.env[ConfigEnvVariables.CANONICAL_DOMAIN] || domain;
 
-  // URL base is required; a scheme is tolerated and stripped so the legacy
-  // BASE_URL fallback (full https:// URL) parses the same way
-  const rawUrlBase =
-    process.env[ConfigEnvVariables.URL_BASE] ??
-    process.env[ConfigEnvVariables.BASE_URL];
-  const urlBase = rawUrlBase
+  // URL base is required; a scheme is tolerated and stripped
+  const urlBase = process.env[ConfigEnvVariables.URL_BASE]
     ?.replace(/^https?:\/\//, "")
     .replace(/\/+$/, "");
   if (!urlBase) {
