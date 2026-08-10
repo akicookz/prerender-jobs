@@ -76,7 +76,8 @@ interface ReportResultBody {
   google_cloud_execution_id: string;
   domain: string;
   canonical_domain: string;
-  origin_host: string;
+  /** URL base the batch was launched against (value of the URL_BASE env var). */
+  url_base: string;
   urls_rendered: number;
   urls_synced_r2: number;
   urls_synced_kv: number;
@@ -172,7 +173,7 @@ async function reportResult({
   urlToOriginalPathMap,
   domain,
   canonicalDomain,
-  originHost,
+  urlBase,
   sitemapUrl,
   sitemapFilter,
   startedAt,
@@ -184,7 +185,7 @@ async function reportResult({
   urlToOriginalPathMap: Map<string, string>;
   domain: string;
   canonicalDomain: string;
-  originHost: string;
+  urlBase: string;
   sitemapUrl: string;
   sitemapFilter: string;
   startedAt: number;
@@ -257,7 +258,7 @@ async function reportResult({
     google_cloud_execution_id: process.env.CLOUD_RUN_EXECUTION ?? "local",
     domain,
     canonical_domain: canonicalDomain,
-    origin_host: originHost,
+    url_base: urlBase,
     urls_rendered: countRendered,
     urls_synced_r2: countR2Synced,
     // KV sync was removed; the field stays 0 to keep the webhook contract.
@@ -322,7 +323,7 @@ async function reportResult({
       `*batch:* \`${escapeMarkdownV2(resultBody.batch_id)}\``,
       `*user id:* \`${escapeMarkdownV2(resultBody.user_id)}\``,
       `*domain:* ${escapeMarkdownV2(resultBody.domain)}`,
-      `*origin host:* ${escapeMarkdownV2(resultBody.origin_host)}`,
+      `*base url:* ${escapeMarkdownV2(config.baseUrl)}`,
       `*execution:* \`${escapeMarkdownV2(resultBody.google_cloud_execution_id)}\``,
       ``,
       `*result:* success: ${successUrls.length}, render\\_failed: ${failedToRenderUrls.length}, sync\\_failed: ${failedToSyncUrls.length}`,
@@ -580,7 +581,8 @@ async function runPipeline({
   result.isRendered = true;
   result.renderDurationMs = renderResult.diagnostics?.durationMs;
   result.readyReason = renderResult.diagnostics?.readyReason;
-  result.throttledRequestCount = renderResult.diagnostics?.throttledRequestCount;
+  result.throttledRequestCount =
+    renderResult.diagnostics?.throttledRequestCount;
 
   // Detect SEO metadata lost during sanitization. Both inputs carry the same
   // placeholders, so property-presence comparisons stay accurate.
@@ -957,7 +959,7 @@ async function main(): Promise<void> {
     urlToOriginalPathMap,
     domain: config.domain,
     canonicalDomain: config.canonicalDomain,
-    originHost: config.originHost,
+    urlBase: config.urlBase,
     sitemapUrl,
     sitemapFilter: config.skipSitemapParsing
       ? "skipped"

@@ -16,10 +16,12 @@ enum ConfigEnvVariables {
   // REQUIRED
   BATCH_ID = "BATCH_ID",
   USER_ID = "USER_ID",
+  URL_BASE = "URL_BASE",
+  // Legacy spelling of URL_BASE (full https:// URL) — accepted as a fallback
+  // until every caller injects URL_BASE
   BASE_URL = "BASE_URL",
   PATHS_LIST = "PATHS_LIST",
   DOMAIN = "DOMAIN",
-  ORIGIN_HOST = "ORIGIN_HOST",
   CF_ACCOUNT_ID = "CF_ACCOUNT_ID",
   R2_ACCESS_KEY_ID = "R2_ACCESS_KEY_ID",
   R2_SECRET_ACCESS_KEY = "R2_SECRET_ACCESS_KEY",
@@ -55,11 +57,12 @@ export interface Configuration {
   requestSource: string;
   // Domain
   domain: string;
-  // Origin host
-  originHost: string;
+  // URL base to fetch pages from: host + optional sub-path, no scheme (e.g.
+  // "origin.example.com" or "abc.com/blog"); echoed as url_base in the webhook
+  urlBase: string;
   // Canonical domain (preferred hostname for canonical URLs)
   canonicalDomain: string;
-  // Base URL (e.g. https://example.com)
+  // "https://" + urlBase (e.g. https://example.com)
   baseUrl: string;
   // Paths with per-path TTL
   pathsList: PathEntry[];
@@ -121,20 +124,23 @@ export function loadConfig(): Configuration {
   const userId = requireEnv(ConfigEnvVariables.USER_ID);
   const requestSource = requireEnv(ConfigEnvVariables.REQUEST_SOURCE);
   const domain = requireEnv(ConfigEnvVariables.DOMAIN);
-  const originHost = requireEnv(ConfigEnvVariables.ORIGIN_HOST);
 
   // Canonical domain is optional; falls back to DOMAIN if not set
   const canonicalDomain =
     process.env[ConfigEnvVariables.CANONICAL_DOMAIN] || domain;
 
-  // Base URL is required
-  const baseUrl = process.env[ConfigEnvVariables.BASE_URL]?.replace(/\/+$/, "");
-  if (!baseUrl) {
-    throw new Error("BASE_URL is required");
+  // URL base is required; a scheme is tolerated and stripped so the legacy
+  // BASE_URL fallback (full https:// URL) parses the same way
+  const rawUrlBase =
+    process.env[ConfigEnvVariables.URL_BASE] ??
+    process.env[ConfigEnvVariables.BASE_URL];
+  const urlBase = rawUrlBase
+    ?.replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "");
+  if (!urlBase) {
+    throw new Error("URL_BASE is required");
   }
-  if (!baseUrl.startsWith("https://")) {
-    throw new Error("BASE_URL must start with https://");
-  }
+  const baseUrl = `https://${urlBase}`;
 
   // Paths list is required
   const pathsListRaw = process.env[ConfigEnvVariables.PATHS_LIST] ?? "";
@@ -233,7 +239,7 @@ export function loadConfig(): Configuration {
     userId,
     requestSource,
     domain,
-    originHost,
+    urlBase,
     canonicalDomain,
     baseUrl,
     pathsList,

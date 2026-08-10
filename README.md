@@ -6,7 +6,7 @@ Prerender engine that fetches pages via headless Chromium, captures full HTML sn
 
 The job runs in four top-level steps:
 
-1. **Prepare URLs** — merges `PATHS_LIST` (resolved against `BASE_URL`) with all URLs discovered from the sitemap, deduplicates, normalises them, and strips tracking params (`utm_*`, click IDs) so URL variants share one render and one cache entry. If `SKIP_SITEMAP_PARSING=true`, sitemap discovery is skipped and only the paths in `PATHS_LIST` are used. Each path entry can specify its own `ttl` (cache TTL in seconds).
+1. **Prepare URLs** — merges `PATHS_LIST` (resolved against `https://<URL_BASE>`) with all URLs discovered from the sitemap, deduplicates, normalises them, and strips tracking params (`utm_*`, click IDs) so URL variants share one render and one cache entry. If `SKIP_SITEMAP_PARSING=true`, sitemap discovery is skipped and only the paths in `PATHS_LIST` are used. Each path entry can specify its own `ttl` (cache TTL in seconds).
 2. **Launch browsers** — one headless Chromium instance (puppeteer-core) per stream, `CONCURRENCY` streams total (capped at the URL count). Each stream's browser is recycled every 20 renders to avoid Chromium memory bloat and relaunched on demand if it dies. Stream start-up is staggered by 2 s so concurrent boot phases don't hit the container at once.
 3. **Run pipeline streams** — each stream pulls the next URL as soon as it finishes its current one (no batch barrier, so one slow render never idles the other streams). All streams share a job-wide in-memory asset cache: each unique script/stylesheet/font/image is fetched from the customer's origin once and served from memory on later renders (disable with `DISABLE_ASSET_CACHE=true`). Every URL flows through a per-URL pipeline:
    1. **Render** — navigates the URL in a new tab and waits for the page to be ready (see [Readiness detection](#readiness-detection) below). A near-empty snapshot (loading shell) is retried once with 4× stability windows; if rendering fails the URL is skipped.
@@ -52,8 +52,7 @@ cp .env.sample .env.local
 | `USER_ID`                | yes      | —                        | User identifier for this batch, passed through to the webhook payload as `user_id`                                              |
 | `REQUEST_SOURCE`         | yes      | —                        | Job trigger identifier (e.g. `scheduler`, `manual`); sent as `source` in the webhook                                            |
 | `DOMAIN`                 | yes      | —                        | The domain being prerendered (e.g. `example.com`); sent as `domain` in the webhook                                              |
-| `ORIGIN_HOST`            | yes      | —                        | The origin host to fetch pages from (e.g. `origin.example.com`); sent as `origin_host` in the webhook                           |
-| `BASE_URL`               | yes      | —                        | Base URL for prerendering, e.g. `https://example.com` (must start with `https://`)                                              |
+| `URL_BASE`               | yes      | —                        | URL base to fetch pages from: host + optional sub-path, no scheme (e.g. `origin.example.com`); the job renders against `https://<URL_BASE>` and echoes it as `url_base` in the webhook. `BASE_URL` (full `https://` URL, legacy) is accepted as a fallback |
 | `PATHS_LIST`             | yes      | —                        | JSON array of path entries, e.g. `[{"path":"/","ttl":604800},{"path":"/about","ttl":86400}]`. Each `path` must start with `/`. `ttl` (seconds) defaults to 604800 (7 days) if omitted |
 | `CF_ACCOUNT_ID`          | yes      | —                        | Cloudflare account ID                                                                                                           |
 | `R2_ACCESS_KEY_ID`       | yes      | —                        | R2 S3-compatible access key                                                                                                     |
@@ -156,7 +155,7 @@ On completion the job POSTs a JSON summary to `WEBHOOK_URL` (if configured). A T
   "google_cloud_execution_id": "abc123", // Cloud Run execution ID, or "local"
   "domain": "example.com",
   "canonical_domain": "example.com",
-  "origin_host": "origin.example.com",
+  "url_base": "origin.example.com", // value of the URL_BASE env var
   "urls_rendered": 42,
   "urls_synced_r2": 42,
   "urls_synced_kv": 0, // always 0 — KV sync was removed; field kept for contract compatibility
