@@ -1,4 +1,31 @@
-import { isMemberOfEnum } from "./util";
+import { isMemberOfEnum, normalizeTokenHost } from "./util";
+import { AppLogger } from "./logger";
+
+export type RenderTokenHostsParse =
+  | { hosts: string[]; problem: null }
+  | { hosts: []; problem: "unset" | "invalid_json" | "no_usable_hosts" };
+
+export function parseRenderTokenHosts(
+  raw: string | undefined,
+): RenderTokenHostsParse {
+  if (!raw || !raw.trim()) return { hosts: [], problem: "unset" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { hosts: [], problem: "invalid_json" };
+  }
+  if (!Array.isArray(parsed)) return { hosts: [], problem: "invalid_json" };
+  const hosts = parsed
+    .filter((h): h is string => typeof h === "string")
+    .map(normalizeTokenHost)
+    .filter((h) => h.length > 0);
+  return hosts.length > 0
+    ? { hosts, problem: null }
+    : { hosts: [], problem: "no_usable_hosts" };
+}
+
+const configLogger = AppLogger.register({ prefix: "config" });
 
 export const DEFAULT_CACHE_TTL = 604800; // 7 days
 const DEFAULT_USER_AGENT =
@@ -39,6 +66,8 @@ enum ConfigEnvVariables {
   REQUEST_SOURCE = "REQUEST_SOURCE",
   CANONICAL_DOMAIN = "CANONICAL_DOMAIN",
   ENCITED_INTERNAL_KEY = "ENCITED_INTERNAL_KEY",
+  RENDER_TOKEN = "RENDER_TOKEN",
+  RENDER_TOKEN_HOSTS = "RENDER_TOKEN_HOSTS",
   OUTPUT_DIR = "OUTPUT_DIR",
   DISABLE_ASSET_CACHE = "DISABLE_ASSET_CACHE",
 }
@@ -95,6 +124,8 @@ export interface Configuration {
   // Shared secret sent as X-Encited-Internal-Key on first-party requests so
   // the Fly proxy exempts them from per-IP rate limiting
   internalKey?: string;
+  renderToken?: string;
+  renderTokenHosts: string[];
   // When set, each run writes its snapshots into a timestamped subdirectory
   // of this path (local testing; execute-on-local.sh bind-mounts it)
   outputDir?: string;
@@ -218,6 +249,22 @@ export function loadConfig(): Configuration {
   const internalKey =
     process.env[ConfigEnvVariables.ENCITED_INTERNAL_KEY] || undefined;
 
+  const renderToken = process.env[ConfigEnvVariables.RENDER_TOKEN] || undefined;
+
+  // Dropping the token beats failing every path in the batch over one header.
+  let renderTokenHosts: string[] = [];
+  if (renderToken) {
+    const parsed = parseRenderTokenHosts(
+      process.env[ConfigEnvVariables.RENDER_TOKEN_HOSTS],
+    );
+    renderTokenHosts = parsed.hosts;
+    if (parsed.problem) {
+      configLogger.warn("Render token will not be sent", {
+        reason: parsed.problem,
+      });
+    }
+  }
+
   // Output directory is optional; when unset, snapshots aren't written to disk
   const outputDir = process.env[ConfigEnvVariables.OUTPUT_DIR] || undefined;
 
@@ -252,6 +299,8 @@ export function loadConfig(): Configuration {
     telegramChatId,
     retryOptions,
     internalKey,
+    renderToken,
+    renderTokenHosts,
     outputDir,
     disableAssetCache,
   };

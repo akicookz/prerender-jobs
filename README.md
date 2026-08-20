@@ -67,6 +67,8 @@ cp .env.sample .env.local
 | `SKIP_SITEMAP_PARSING`   | no       | `false`                  | Set to `true` to skip sitemap discovery and only render URLs in `PATHS_LIST`                                                    |
 | `CANONICAL_DOMAIN`       | no       | value of `DOMAIN`        | Preferred hostname rewritten into canonical/og:url/base tags                                                                    |
 | `ENCITED_INTERNAL_KEY`   | no       | —                        | Sent as `X-Encited-Internal-Key` on first-party requests so the Fly proxy exempts them from per-IP rate limiting                |
+| `RENDER_TOKEN`           | no       | —                        | Customer's own value, sent as `x-encited-token` to their hosts over https so their firewall can allowlist the render            |
+| `RENDER_TOKEN_HOSTS`     | no       | `[]`                     | JSON list of hosts `RENDER_TOKEN` may be sent to, matched exactly: `["example.com","www.example.com"]`. No www is added for you. Without a usable list the token is not sent and the run logs a warning |
 | `WEBHOOK_URL`            | no       | —                        | Callback URL called on completion                                                                                               |
 | `WEBHOOK_SIGNATURE`      | no       | —                        | Secret sent as `x-webhook-signature` header with every webhook request                                                          |
 | `TELEGRAM_BOT_TOKEN`     | no       | —                        | Telegram bot token for result/failure notifications; Telegram is skipped if unset                                               |
