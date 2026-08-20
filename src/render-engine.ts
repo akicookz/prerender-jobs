@@ -874,6 +874,7 @@ export class RenderEngine {
       // Turnstile challenge polling can run for many seconds and never
       // contributes snapshot content.
       "challenges.cloudflare.com",
+      "pndsn.com",
     ];
     return ignoredHosts.some((h) => host === h || host.endsWith(`.${h}`));
   }
