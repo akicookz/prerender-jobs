@@ -6,6 +6,7 @@ import {
   Page,
 } from "puppeteer-core";
 import { getHostname } from "tldts";
+import { normalizeTokenHost } from "./util";
 import { AssetCache } from "./asset-cache";
 import { RequestStats } from "./request-stats";
 import { AppLogger } from "./logger";
@@ -18,6 +19,28 @@ const INTERNAL_PRERENDER_HEADER = "x-lovablehtml-internal";
 // per-IP rate limiting (lovablehtml/caddy-proxy/Caddyfile). Sent only to the
 // render target and the customer's own hostnames, never to third parties.
 const ENCITED_INTERNAL_KEY_HEADER = "x-encited-internal-key";
+const RENDER_TOKEN_HEADER = "x-encited-token";
+
+/** Case-insensitive, because a redirected request keeps the previous hop's casing. */
+function deleteHeader(headers: Record<string, string>, lowercaseName: string) {
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase() === lowercaseName) delete headers[name];
+  }
+}
+
+/**
+ * The token to send to this URL, or null. Callers must strip on null, not just
+ * skip: a redirected request arrives holding the previous hop's headers.
+ */
+export function renderTokenFor(
+  url: URL,
+  hosts: ReadonlySet<string>,
+  token: string | null,
+): string | null {
+  if (!token) return null;
+  if (url.protocol !== "https:") return null;
+  return hosts.has(normalizeTokenHost(url.hostname)) ? token : null;
+}
 const MAX_NAVIGATIONS = 10;
 const MAX_RENDER_ATTEMPTS = 2;
 // Static asset types eligible for the job-wide AssetCache. Documents and
@@ -162,6 +185,8 @@ export class RenderEngine {
   private readonly _browser: Browser;
   private readonly _userAgent: string;
   private readonly _internalKey: string | null;
+  private readonly _renderToken: string | null;
+  private readonly _renderTokenHosts: Set<string>;
   private readonly _internalKeyHosts: Set<string>;
   private readonly _stabilityMultiplier: number;
   private readonly _assetCache: AssetCache | null;
@@ -173,6 +198,8 @@ export class RenderEngine {
     browser,
     userAgent,
     internalKey,
+    renderToken,
+    renderTokenHosts,
     internalKeyHosts,
     extendedStability,
     assetCache,
@@ -182,6 +209,8 @@ export class RenderEngine {
     browser: Browser;
     userAgent: string;
     internalKey?: string;
+    renderToken?: string;
+    renderTokenHosts?: string[];
     internalKeyHosts?: string[];
     // Widens the readiness quiet/stable windows 4x. Used when retrying a
     // render whose first attempt produced a loading-shell snapshot.
@@ -197,6 +226,8 @@ export class RenderEngine {
       browser,
       userAgent,
       internalKey ?? null,
+      renderToken ?? null,
+      renderTokenHosts ?? [],
       internalKeyHosts ?? [],
       extendedStability ?? false,
       assetCache ?? null,
@@ -209,23 +240,30 @@ export class RenderEngine {
     browser: Browser,
     userAgent: string,
     internalKey: string | null,
+    renderToken: string | null,
+    renderTokenHosts: string[],
     internalKeyHosts: string[],
     extendedStability: boolean,
     assetCache: AssetCache | null,
     requestStats: RequestStats | null,
   ) {
     this._url = targetUrl;
-    this._targetHost = getHostname(targetUrl) ?? "";
+    this._targetHost = normalizeTokenHost(getHostname(targetUrl) ?? "");
     this._browser = browser;
     this._userAgent = userAgent.trim();
     this._internalKey = internalKey;
+    this._renderToken = renderToken;
+    this._renderTokenHosts = new Set(
+      renderTokenHosts.map(normalizeTokenHost).filter((h) => h.length > 0),
+    );
     this._assetCache = assetCache;
     this._requestStats = requestStats;
     // Cover both apex and www forms so requests to either routing hostname
     // carry the key.
     this._internalKeyHosts = new Set(
       internalKeyHosts
-        .map((h) => h.toLowerCase())
+        .map(normalizeTokenHost)
+        .filter((h) => h.length > 0)
         .flatMap((h) =>
           h.startsWith("www.") ? [h, h.slice(4)] : [h, `www.${h}`],
         ),
@@ -501,7 +539,7 @@ export class RenderEngine {
       }
 
       // Add the internal prerender header only to same-origin requests
-      const reqHost = url.hostname;
+      const reqHost = normalizeTokenHost(url.hostname);
       const headers = req.headers();
       if (reqHost === targetHost) {
         headers[INTERNAL_PRERENDER_HEADER] = "1";
@@ -511,6 +549,18 @@ export class RenderEngine {
         (reqHost === targetHost || this._internalKeyHosts.has(reqHost))
       ) {
         headers[ENCITED_INTERNAL_KEY_HEADER] = this._internalKey;
+      } else {
+        deleteHeader(headers, ENCITED_INTERNAL_KEY_HEADER);
+      }
+      const tokenForHost = renderTokenFor(
+        url,
+        this._renderTokenHosts,
+        this._renderToken,
+      );
+      if (tokenForHost) {
+        headers[RENDER_TOKEN_HEADER] = tokenForHost;
+      } else {
+        deleteHeader(headers, RENDER_TOKEN_HEADER);
       }
       const isCustomerHost =
         reqHost === targetHost || this._internalKeyHosts.has(reqHost);
@@ -667,7 +717,7 @@ export class RenderEngine {
     }
     // Cache only the customer's own hosts — that's whose origin we're
     // protecting, and it bounds the cache to one site's asset set.
-    const host = getHostname(url);
+    const host = normalizeTokenHost(getHostname(url) ?? "");
     if (
       !host ||
       (host !== this._targetHost && !this._internalKeyHosts.has(host))

@@ -29,3 +29,20 @@ export function escapeMarkdownV2(text: string): string {
 export function escapeMarkdownV2Code(text: string): string {
   return text.replace(/[`\\]/g, "\\$&");
 }
+
+/** Host of a value that may carry a scheme, path, port, userinfo or trailing dot. */
+export function normalizeTokenHost(value: string): string {
+  const withoutScheme = value
+    .trim()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+    .replace(/^\/\//, "");
+  // `https://` + a path would parse the first segment as the host.
+  if (!withoutScheme || withoutScheme.startsWith("/")) return "";
+  try {
+    return new URL(`https://${withoutScheme}`).hostname
+      .toLowerCase()
+      .replace(/\.$/, "");
+  } catch {
+    return "";
+  }
+}
