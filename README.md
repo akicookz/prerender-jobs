@@ -93,19 +93,19 @@ This builds the image and runs it with `.env.local` injected as environment vari
 
 The job runs on Google Cloud Run. The Cloud Run Job is defined in `cloudrun-job.yaml` (2 vCPU, 2 GiB memory, 20-minute timeout, project `seotools01`).
 
-All deploy scripts default to job name `prerender-jobs` in region `us-east1`. Override either with the `JOB_NAME` and `REGION` env vars. Both jobs share the same `gcr.io` image (it's global), so you can run several independently-named jobs across regions at once. To stand up a **new** job for the first time, run the steps in this order — the job must exist before `deploy.sh`'s image update can target it:
+**CI deploy:** every push to `main` fires the `prerender-jobs` Cloud Build trigger (us-east1, `github-akicookz` connection), which runs `cloudbuild.yaml`: one image build, then updates **both** jobs — `prerender-jobs` (us-east1) and `prerender-jobs-enterprise` (us-central1). `pnpm deploy:job` runs the exact same build manually.
+
+The `update-job` / `exec:cloud` scripts default to job name `prerender-jobs` in region `us-east1`; the `:enterprise` variants set `JOB_NAME` / `REGION` for you, and you can target any job/region ad hoc by setting those env vars on the base scripts. Both jobs share the same `gcr.io` image (it's global). To stand up a **new** job for the first time, run the steps in this order — the job must exist before the deploy's image update can target it:
 
 ```bash
 # Default job, unchanged:
 pnpm update-job && pnpm deploy:job && pnpm exec:cloud   # prerender-jobs / us-east1
 
-# Enterprise job (prerender-jobs-enterprise / us-central1), via dedicated scripts:
+# Enterprise job (prerender-jobs-enterprise / us-central1):
 pnpm update-job:enterprise   # creates the job
-pnpm deploy:job:enterprise   # builds + points image at it
+pnpm deploy:job              # builds + updates both jobs
 pnpm exec:cloud:enterprise   # runs it
 ```
-
-The `:enterprise` scripts just set `JOB_NAME` / `REGION` for you; you can still target any job/region ad hoc by setting those env vars on the base scripts.
 
 ### 1. Set up production environment variables
 

@@ -1,9 +1,11 @@
 #! /bin/bash
 
+# Manual deploy. Builds the image once and updates BOTH Cloud Run Jobs
+# (prerender-jobs in us-east1 and prerender-jobs-enterprise in us-central1),
+# same as the Cloud Build trigger that runs on every push to main.
+
 set -e
 
 PROJECT="seotools01"
-JOB_NAME="${JOB_NAME:-prerender-jobs}"
-REGION="${REGION:-us-east1}"
 
-gcloud builds submit . --substitutions=_REGION="$REGION",_JOB_NAME="$JOB_NAME"
+gcloud builds submit . --project "$PROJECT"
