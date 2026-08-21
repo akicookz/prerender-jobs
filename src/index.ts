@@ -308,7 +308,7 @@ async function reportResult({
   const hasFailedCases =
     failedToRenderUrls.length > 0 || failedToSyncUrls.length > 0;
   const shouldSendToTelegram =
-    isFinalRetryRun || (hasFailedCases && resultBody.source === "manual");
+    hasFailedCases && (isFinalRetryRun || resultBody.source === "manual");
   if (
     config.telegramBotToken &&
     config.telegramChatId &&
