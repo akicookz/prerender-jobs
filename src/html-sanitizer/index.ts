@@ -129,9 +129,9 @@ export function sanitizeHtml({
   }
 
   // -------------------------------------------------------------------------
-  // R7 + R10: Remove inline scripts (head + body)
+  // R7 + R10: Remove scripts (head + body)
   // -------------------------------------------------------------------------
-  removeInlineScripts(root);
+  removeScripts(root);
 
   // -------------------------------------------------------------------------
   // R8 + R11: Remove all <style> elements (head + body)
@@ -522,12 +522,13 @@ function ensureViewport(head: HTMLElement): void {
 
 // -- R7 + R10 --
 
-function removeInlineScripts(root: HTMLElement): void {
+// A snapshot is served to bots, which must never boot the app over the
+// serialized DOM: a half-hydrating SPA wipes the prerendered body and the bot
+// indexes a blank page. Inline code is dropped by the same rule, so a bundle
+// tag left behind would load a script with none of the state it expects.
+function removeScripts(root: HTMLElement): void {
   const scripts = root.querySelectorAll("script");
   for (const script of scripts) {
-    // Keep external scripts (have src attribute)
-    if (script.hasAttribute("src")) continue;
-
     // Keep JSON-LD structured data
     const type = script.getAttribute("type")?.toLowerCase();
     if (type === "application/ld+json") continue;

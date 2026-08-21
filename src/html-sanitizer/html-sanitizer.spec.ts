@@ -592,9 +592,9 @@ describe("R6: charset and viewport", () => {
 });
 
 // ---------------------------------------------------------------------------
-// R7 — Remove inline scripts from head
+// R7 — Remove scripts from head
 // ---------------------------------------------------------------------------
-describe("R7: inline scripts in head", () => {
+describe("R7: scripts in head", () => {
   it("removes inline <script> (analytics/tag manager)", () => {
     const html = doc({
       head: `<title>Test</title><script>window.ga=function(){}</script>`,
@@ -604,13 +604,13 @@ describe("R7: inline scripts in head", () => {
     expect(result).not.toContain("window.ga");
   });
 
-  it("keeps <script src='...'>", () => {
+  it("removes <script src='...'>", () => {
     const html = doc({
       head: `<title>Test</title><script src="https://cdn.example.com/app.js"></script>`,
       body: wordsBody(50),
     });
     const result = sanitize(html);
-    expect(result).toContain('src="https://cdn.example.com/app.js"');
+    expect(result).not.toContain('src="https://cdn.example.com/app.js"');
   });
 
   it("keeps <script type='application/ld+json'>", () => {
@@ -719,9 +719,9 @@ describe("R9: browser performance hints", () => {
 });
 
 // ---------------------------------------------------------------------------
-// R10 — Remove inline scripts from body
+// R10 — Remove scripts from body
 // ---------------------------------------------------------------------------
-describe("R10: inline scripts in body", () => {
+describe("R10: scripts in body", () => {
   it("removes inline scripts in body", () => {
     const html = doc({
       head: `<title>Test</title>`,
@@ -755,13 +755,24 @@ describe("R10: inline scripts in body", () => {
     expect(result).toContain('"@type"');
   });
 
-  it("keeps <script src='...'> in body", () => {
+  it("removes <script src='...'> in body", () => {
     const html = doc({
       head: `<title>Test</title>`,
       body: `<p>Content</p><script src="/app.js"></script>`,
     });
     const result = sanitize(html);
-    expect(result).toContain('src="/app.js"');
+    expect(result).not.toContain('src="/app.js"');
+    expect(result).toContain("Content");
+  });
+
+  it("removes a module bundle tag", () => {
+    const html = doc({
+      head: `<title>Test</title>`,
+      body: `<p>Content</p><script type="module" src="/assets/index-B7xK2p.js"></script>`,
+    });
+    const result = sanitize(html);
+    expect(result).not.toContain("<script");
+    expect(result).toContain("Content");
   });
 });
 
@@ -1527,14 +1538,15 @@ describe("content preservation", () => {
     expect(result).toContain("schema.org");
   });
 
-  it("preserves external script references", () => {
+  it("removes external script references", () => {
     const html = doc({
       head: `<title>Test</title><script src="https://cdn.example.com/app.js"></script>`,
       body: `<p>Content</p><script src="/vendor.js"></script>`,
     });
     const result = sanitize(html);
-    expect(result).toContain("cdn.example.com/app.js");
-    expect(result).toContain("/vendor.js");
+    expect(result).not.toContain("cdn.example.com/app.js");
+    expect(result).not.toContain("/vendor.js");
+    expect(result).toContain("Content");
   });
 
   it("preserves external stylesheet references", () => {
@@ -1726,8 +1738,8 @@ describe("full sanitization (combined)", () => {
     // JSON-LD kept
     expect(result).toContain("application/ld+json");
     expect(result).toContain("schema.org");
-    // External script kept
-    expect(result).toContain("googletagmanager.com");
+    // External script removed
+    expect(result).not.toContain("googletagmanager.com");
     // External stylesheet kept
     expect(result).toContain('rel="stylesheet"');
     // Icon kept
