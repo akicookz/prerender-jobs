@@ -26,18 +26,39 @@ export function hasSoft404Wording(text: string): boolean {
 }
 
 /**
+ * A value delimited by one quote may contain the other, so a class excluding
+ * both truncates at the first apostrophe in ordinary prose. Mirrors
+ * lovablehtml's shared/html-parsing.ts; keep in sync.
+ */
+const TAG_ATTRIBUTE_RE =
+  /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+
+function parseTagAttributes(tag: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  for (const m of tag.matchAll(TAG_ATTRIBUTE_RE)) {
+    attrs[m[1]!.toLowerCase()] = m[2] ?? m[3] ?? m[4] ?? "";
+  }
+  return attrs;
+}
+
+/** Quoted segments are skipped whole, so a `>` inside a value cannot end it. */
+function collectMetaAttributes(html: string): Array<Record<string, string>> {
+  const re = /<meta\b(?:"[^"]*"|'[^']*'|[^>])*>/gi;
+  return [...html.matchAll(re)].map((m) => parseTagAttributes(m[0]));
+}
+
+/**
  * Extract the numeric value of the `prerender-status-code` meta tag —
  * the tag users add to their 404 route to explicitly hint the status.
  */
 export function extractStatusCodeHint(html: string): number | undefined {
-  const match =
-    html.match(
-      /<meta[^>]+name=["']prerender-status-code["'][^>]+content=["']([^"']*)["']/i,
-    ) ||
-    html.match(
-      /<meta[^>]+content=["']([^"']*)["'][^>]+name=["']prerender-status-code["']/i,
-    );
-  const raw = match?.[1];
+  let raw: string | undefined;
+  for (const attrs of collectMetaAttributes(html)) {
+    if ((attrs.name ?? "").trim().toLowerCase() === "prerender-status-code") {
+      raw = attrs.content ?? "";
+      break;
+    }
+  }
   if (raw === undefined) return undefined;
   const code = Number.parseInt(raw.trim(), 10);
   return Number.isFinite(code) ? code : undefined;
@@ -49,14 +70,10 @@ export function extractStatusCodeHint(html: string): number | undefined {
  * `content="none"` is not recognized; the directive must be explicit.
  */
 export function hasNoindexMeta(html: string): boolean {
-  const patterns = [
-    /<meta[^>]+name=["'](?:robots|googlebot)["'][^>]+content=["']([^"']*)["']/gi,
-    /<meta[^>]+content=["']([^"']*)["'][^>]+name=["'](?:robots|googlebot)["']/gi,
-  ];
-  for (const pattern of patterns) {
-    for (const match of html.matchAll(pattern)) {
-      const content = match[1];
-      if (content !== undefined && /noindex/i.test(content)) return true;
+  for (const attrs of collectMetaAttributes(html)) {
+    const name = (attrs.name ?? "").trim().toLowerCase();
+    if (name === "robots" || name === "googlebot") {
+      if (/noindex/i.test(attrs.content ?? "")) return true;
     }
   }
   return false;

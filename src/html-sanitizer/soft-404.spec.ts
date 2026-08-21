@@ -273,3 +273,28 @@ describe("looksLikeFailedRender", () => {
     ).toBe(false);
   });
 });
+
+describe("meta attribute quoting", () => {
+  it("reads a double-quoted value containing an apostrophe", () => {
+    const html = `<meta name="robots" content="noindex, it's set">`;
+    expect(hasNoindexMeta(html)).toBe(true);
+  });
+
+  it("reads a single-quoted value containing a double quote", () => {
+    const html = `<meta name='robots' content='noindex "hard"'>`;
+    expect(hasNoindexMeta(html)).toBe(true);
+  });
+
+  it("reads attributes in either order", () => {
+    expect(extractStatusCodeHint(`<meta content="410" name="prerender-status-code">`)).toBe(410);
+  });
+
+  it("is not ended by a > inside a value", () => {
+    const html = `<meta name="robots" content="noindex a > b">`;
+    expect(hasNoindexMeta(html)).toBe(true);
+  });
+
+  it("does not match a different meta name", () => {
+    expect(hasNoindexMeta(`<meta name="description" content="noindex is mentioned">`)).toBe(false);
+  });
+});
