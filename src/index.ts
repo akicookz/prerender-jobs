@@ -119,6 +119,11 @@ async function sendTelegramMessage({
   await Promise.race([
     telegramBot.sendMessage(chatId, message.slice(0, 4096), {
       parse_mode: "MarkdownV2",
+      // The library JSON-serializes only reply_markup and entities, so this
+      // parameter has to go over the wire already serialized.
+      link_preview_options: JSON.stringify({
+        is_disabled: true,
+      }) as unknown as TelegramBot.LinkPreviewOptions,
     }),
     new Promise((_, reject) =>
       setTimeout(() => reject(new Error("Telegram send timeout")), 10000),
@@ -320,11 +325,11 @@ async function reportResult({
         : `*⚠️ Manual run finished with failures*`,
       ``,
       `*source:* ${escapeMarkdownV2(resultBody.source)}`,
-      `*batch:* \`${escapeMarkdownV2(resultBody.batch_id)}\``,
-      `*user id:* \`${escapeMarkdownV2(resultBody.user_id)}\``,
-      `*domain:* ${escapeMarkdownV2(resultBody.domain)}`,
-      `*base url:* ${escapeMarkdownV2(config.baseUrl)}`,
-      `*execution:* \`${escapeMarkdownV2(resultBody.google_cloud_execution_id)}\``,
+      `*batch:* \`${escapeMarkdownV2Code(resultBody.batch_id)}\``,
+      `*user id:* \`${escapeMarkdownV2Code(resultBody.user_id)}\``,
+      `*domain:* \`${escapeMarkdownV2Code(resultBody.domain)}\``,
+      `*base url:* \`${escapeMarkdownV2Code(config.baseUrl)}\``,
+      `*execution:* \`${escapeMarkdownV2Code(resultBody.google_cloud_execution_id)}\``,
       ``,
       `*result:* success: ${successUrls.length}, render\\_failed: ${failedToRenderUrls.length}, sync\\_failed: ${failedToSyncUrls.length}`,
     ];
@@ -351,11 +356,11 @@ async function reportResult({
     ) {
       lines.push(
         ``,
-        `*parent batch group:* \`${escapeMarkdownV2(parentBatchGroupIds[0])}\``,
+        `*parent batch group:* \`${escapeMarkdownV2Code(parentBatchGroupIds[0])}\``,
       );
       if (parentExecutionIds.length > 0) {
         lines.push(
-          `*parent executions:* \`${escapeMarkdownV2(parentExecutionIds.join(", "))}\``,
+          `*parent executions:* \`${escapeMarkdownV2Code(parentExecutionIds.join(", "))}\``,
         );
       }
     }
@@ -601,7 +606,7 @@ async function runPipeline({
           await sendTelegramMessage({
             botToken: config.telegramBotToken,
             chatId: config.telegramChatId,
-            message: `⚠️ SEO metadata lost during sanitization\n\nJob ID: ${escapeMarkdownV2(process.env.CLOUD_RUN_EXECUTION ?? "")}\nURL: ${escapeMarkdownV2(urlToRender)}\nPath: ${escapeMarkdownV2(path)}\nLost: ${escapeMarkdownV2(metadataLoss.lostProperties.join(", "))}`,
+            message: `⚠️ SEO metadata lost during sanitization\n\nJob ID: \`${escapeMarkdownV2Code(process.env.CLOUD_RUN_EXECUTION ?? "")}\`\nURL: \`${escapeMarkdownV2Code(urlToRender)}\`\nPath: \`${escapeMarkdownV2Code(path)}\`\nLost: ${escapeMarkdownV2(metadataLoss.lostProperties.join(", "))}`,
           });
         } catch (e) {
           logger.error(`Failed to send metadata loss alert to Telegram`, e);
