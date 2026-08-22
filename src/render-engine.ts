@@ -42,6 +42,9 @@ export function renderTokenFor(
   return hosts.has(normalizeTokenHost(url.hostname)) ? token : null;
 }
 const MAX_NAVIGATIONS = 10;
+// Throttle for probe-timeout logs: a wedged renderer times out every probe of
+// every tick, and one line per occurrence would bury the rest of the render log.
+const PROBE_TIMEOUT_LOG_INTERVAL_MS = 5_000;
 const MAX_RENDER_ATTEMPTS = 2;
 // Static asset types eligible for the job-wide AssetCache. Documents and
 // xhr/fetch responses must never be cached — snapshots would capture stale
@@ -192,6 +195,8 @@ export class RenderEngine {
   private readonly _assetCache: AssetCache | null;
   private readonly _requestStats: RequestStats | null;
   private readonly _logger: AppLogger;
+  private _probeTimeouts = 0;
+  private _lastProbeTimeoutLogAt = 0;
 
   static register({
     targetUrl,
@@ -886,18 +891,43 @@ export class RenderEngine {
     page: Page,
     fn: () => T,
     fallback: () => T,
+    probe: string,
     timeoutMs = 1000,
   ): Promise<T> {
     try {
       return await Promise.race([
         page.evaluate(fn) as Promise<T>,
         new Promise<T>((resolve) =>
-          setTimeout(() => resolve(fallback()), timeoutMs),
+          setTimeout(() => {
+            this.noteProbeTimeout(probe, timeoutMs);
+            resolve(fallback());
+          }, timeoutMs),
         ),
       ]);
     } catch {
       return fallback();
     }
+  }
+
+  /**
+   * A probe timeout means the renderer stopped answering evaluate, so every
+   * readiness signal below is a fallback, not an observation — "no metadata"
+   * really means "couldn't look". Logged throttled: once a page wedges, every
+   * probe of every tick times out.
+   */
+  private noteProbeTimeout(probe: string, timeoutMs: number): void {
+    this._probeTimeouts++;
+    const now = Date.now();
+    if (
+      this._probeTimeouts > 1 &&
+      now - this._lastProbeTimeoutLogAt < PROBE_TIMEOUT_LOG_INTERVAL_MS
+    ) {
+      return;
+    }
+    this._lastProbeTimeoutLogAt = now;
+    this._logger.debug(
+      `[Prerender] Readiness probe "${probe}" timed out after ${timeoutMs}ms — renderer not answering evaluate (${this._probeTimeouts} probe timeouts so far); readiness signals are falling back`,
+    );
   }
 
   private async checkAppFlag({
@@ -918,6 +948,7 @@ export class RenderEngine {
         };
       },
       () => ({ defined: false, ready: false }),
+      "app-flag",
     );
   }
 
@@ -929,6 +960,7 @@ export class RenderEngine {
         return (window.__lastDomChange ?? Date.now()) as number;
       },
       () => Date.now(),
+      "last-dom-change",
     );
   }
 
@@ -944,6 +976,7 @@ export class RenderEngine {
         return (window.__heartbeatTick ?? null) as number | null;
       },
       () => null,
+      "heartbeat",
     );
   }
 
@@ -956,6 +989,52 @@ export class RenderEngine {
     try {
       if (typeof page.evaluateOnNewDocument === "function") {
         await page.evaluateOnNewDocument(() => {
+          try {
+            // A prerender always has the network, so a service worker can only
+            // cost us: it adds an install/activate race to every render, and a
+            // "kill-switch" SW (claim() + clients.navigate() from its activate
+            // handler) deadlocks the tab outright — after which every evaluate,
+            // and page.content() with it, hangs until the render timeout.
+            //
+            // The API stays present and inert rather than removed: plenty of
+            // apps call navigator.serviceWorker.register() unguarded, and a
+            // missing property turns that into a TypeError during boot — a
+            // silent blank render, worse than the timeout being fixed.
+            const noop = () => void 0;
+            const registration = {
+              installing: null,
+              waiting: null,
+              active: null,
+              scope: location.origin + "/",
+              updateViaCache: "none",
+              update: () => Promise.resolve(),
+              unregister: () => Promise.resolve(true),
+              addEventListener: noop,
+              removeEventListener: noop,
+            };
+            const container = {
+              controller: null,
+              // Deliberately unfaithful: with nothing registered a real browser
+              // leaves `ready` pending forever, so an app that awaits it before
+              // mounting would hang — the exact failure being removed here.
+              ready: Promise.resolve(registration),
+              // Resolves with a plausible registration so
+              // `.then((reg) => reg.addEventListener(...))` chains don't throw.
+              register: () => Promise.resolve(registration),
+              getRegistration: () => Promise.resolve(undefined),
+              getRegistrations: () => Promise.resolve([]),
+              startMessages: noop,
+              addEventListener: noop,
+              removeEventListener: noop,
+            };
+            Object.defineProperty(navigator, "serviceWorker", {
+              configurable: true,
+              get: () => container,
+            });
+          } catch {
+            void 0;
+          }
+
           try {
             // @ts-expect-error - custom window properties
             window.__TO_HTML = true;
@@ -1034,6 +1113,7 @@ export class RenderEngine {
         );
       },
       () => false,
+      "head-metadata",
     );
   }
 
