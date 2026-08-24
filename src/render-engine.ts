@@ -85,10 +85,9 @@ export type RenderDiagnostics = {
   // 429 responses on xhr/fetch data calls (non-ignored hosts) during the
   // render — the origin-under-pressure signal batch reports aggregate.
   throttledRequestCount: number;
-  // Endpoints (host+path keys) whose tracked requests were actually
-  // suppressed from readiness gating during this render because they were
-  // beacon-classified. Statically-ignored endpoints never appear — they are
-  // filtered before tracking.
+  // Beacon endpoints whose tracked requests were actually suppressed from
+  // readiness gating this render. Statically-ignored ones never appear —
+  // they are filtered before tracking.
   beaconEndpoints: string[];
 };
 
@@ -190,6 +189,19 @@ export function renderDiagnosticsToMetadata(
     ),
   };
 }
+
+/** One tracked in-flight request, as the idle computation sees it. */
+type PendingRequestInfo = {
+  startedAt: number;
+  /** Beacon endpoint key (xhr/fetch only), or null. */
+  key: string | null;
+};
+
+/** Readiness state the request/response handlers need to see mid-render. */
+export type ReadinessSignal = {
+  /** When the DOM was first observed continuously stable, else null. */
+  domStableSince: number | null;
+};
 
 type ReadinessState = {
   appSignaled: boolean;
@@ -431,13 +443,10 @@ export class RenderEngine {
             (resourceType === "xhr" || resourceType === "fetch")
           ) {
             const parsed = new URL(url);
-            // A rate-limited third-party telemetry collector is not origin
-            // pressure — the beacon guard keeps classified endpoints out of
-            // the throttled count that feeds render-cap demotion. Customer
-            // hosts are exempt from that guard: a 429 from the customer's
-            // own origin is always origin pressure, even if the endpoint's
-            // request pattern got it classified (429-retry loops look like
-            // repeat-fire).
+            // A rate-limited third-party collector is not origin pressure,
+            // so classified endpoints stay out of the count that feeds
+            // render-cap demotion. Customer hosts are exempt from that
+            // guard: their 429s are always origin pressure.
             const reqHost = normalizeTokenHost(parsed.hostname);
             const isCustomerHost =
               reqHost === this._targetHost ||
@@ -560,15 +569,16 @@ export class RenderEngine {
     // key; waitForPageReady filters aged-out and beacon-classified entries
     // from the idle computation, but everything stays here for the
     // pendingRequests diagnostic.
-    const firstPartyReqPending = new Map<
-      HTTPRequest,
-      { startedAt: number; key: string | null }
-    >();
+    const firstPartyReqPending = new Map<HTTPRequest, PendingRequestInfo>();
     const outgoingRequests = new Set<HTTPRequest>();
     // Per-render hit tracking; classification verdicts are shared job-wide
     // through the detector.
     const beaconSession: BeaconRenderSession | null =
       this._beaconDetector?.startRender() ?? null;
+    // Written by waitForPageReady each tick, read by the response handler
+    // below. Null until the readiness loop starts, so boot traffic never
+    // counts as post-stable.
+    const readinessSignal: ReadinessSignal = { domStableSince: null };
     // Endpoints whose tracked requests were actually suppressed from
     // readiness gating this render (filled by waitForPageReady).
     const suppressedBeaconKeys = new Set<string>();
@@ -651,14 +661,11 @@ export class RenderEngine {
       // tracked; suppression of classified endpoints happens inside
       // waitForPageReady's idle computation, so diagnostics keep the full
       // pending picture and a classification made by one pipeline takes
-      // effect in every concurrent render immediately.
-      let beaconKey: string | null = null;
-      if (
-        beaconSession &&
-        (resourceType === "fetch" || resourceType === "xhr")
-      ) {
-        beaconKey = beaconSession.record(url, Date.now())?.key ?? null;
-      }
+      // effect in every concurrent render immediately. Hits are recorded on
+      // the response (below) — only successful completions count.
+      const isDataRequest = resourceType === "fetch" || resourceType === "xhr";
+      const beaconKey =
+        beaconSession && isDataRequest ? BeaconDetector.endpointKey(url) : null;
 
       try {
         if (this.shouldTrackReq({ req, targetHost, path: url.pathname })) {
@@ -671,6 +678,29 @@ export class RenderEngine {
         void 0;
       }
     });
+
+    if (beaconSession) {
+      page.on("response", (res: HTTPResponse) => {
+        try {
+          const resourceType = res.request().resourceType();
+          if (resourceType !== "xhr" && resourceType !== "fetch") {
+            return;
+          }
+          // 4xx/5xx is the page failing to get its content — a retry loop,
+          // not telemetry.
+          if (res.status() >= 400) {
+            return;
+          }
+          beaconSession.record(
+            res.url(),
+            Date.now(),
+            readinessSignal.domStableSince !== null,
+          );
+        } catch {
+          // ignore
+        }
+      });
+    }
 
     const settle = (req: HTTPRequest) => {
       if (outgoingRequests.has(req)) {
@@ -721,6 +751,7 @@ export class RenderEngine {
       page,
       firstPartyReqPending,
       suppressedBeaconKeys,
+      readinessSignal,
     });
     this._logger.debug(`[Prerender] Snapshot triggered by: ${readyReason}`);
     if (!response) {
@@ -1126,15 +1157,16 @@ export class RenderEngine {
     page,
     firstPartyReqPending,
     suppressedBeaconKeys,
+    readinessSignal,
   }: {
     page: Page;
-    firstPartyReqPending: Map<
-      HTTPRequest,
-      { startedAt: number; key: string | null }
-    >;
+    firstPartyReqPending: Map<HTTPRequest, PendingRequestInfo>;
     // Filled with the endpoint keys whose requests were suppressed from the
     // idle computation because they are beacon-classified (diagnostics).
     suppressedBeaconKeys?: Set<string>;
+    // Published each tick so the response handler can tell whether a hit
+    // landed on an already-stable DOM (see BeaconDetector).
+    readinessSignal?: ReadinessSignal;
   }): Promise<string> {
     // Readiness detection constants
     const HARD_TIMEOUT_MS = 30_000;
@@ -1246,11 +1278,15 @@ export class RenderEngine {
           // the map for the pendingRequests diagnostic): beacon-classified
           // endpoints (checked live, so a classification made by any
           // concurrent pipeline applies here immediately), and requests
-          // pending longer than the age cap — long-polls or hung requests.
+          // pending longer than the age cap — long-polls, hung data calls,
+          // and requests orphaned by a redirect (see PENDING_MAX_AGE_MS).
           const pendingMaxAgeMs =
             PENDING_MAX_AGE_MS * this._stabilityMultiplier;
           let activePending = 0;
-          for (const { startedAt, key } of firstPartyReqPending.values()) {
+          for (const {
+            startedAt: reqStartedAt,
+            key,
+          } of firstPartyReqPending.values()) {
             if (
               key !== null &&
               this._beaconDetector?.isBeaconKey(key) === true
@@ -1258,7 +1294,11 @@ export class RenderEngine {
               suppressedBeaconKeys?.add(key);
               continue;
             }
-            if (now - startedAt < pendingMaxAgeMs) {
+            // Age from the later of request start and readiness start:
+            // requests issued during a slow page.goto are already old by the
+            // first tick, and still deserve the full grace period.
+            const ageFrom = Math.max(reqStartedAt, startedAt);
+            if (now - ageFrom < pendingMaxAgeMs) {
               activePending++;
             }
           }
@@ -1282,6 +1322,9 @@ export class RenderEngine {
             }
           } else {
             state.domStableSince = null;
+          }
+          if (readinessSignal) {
+            readinessSignal.domStableSince = state.domStableSince;
           }
 
           const networkIdleDuration =

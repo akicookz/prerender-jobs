@@ -159,9 +159,9 @@ describe("waitForPageReady readiness-flag contract", () => {
     // Another pipeline's render classifies the endpoint...
     const session = detector.startRender();
     const t0 = Date.now();
-    session.record("https://example.com/OvxsBeacon?cb=1", t0);
-    session.record("https://example.com/OvxsBeacon?cb=2", t0 + 3_000);
-    session.record("https://example.com/OvxsBeacon?cb=3", t0 + 6_000);
+    session.record("https://example.com/OvxsBeacon?cb=1", t0, true);
+    session.record("https://example.com/OvxsBeacon?cb=2", t0 + 3_000, true);
+    session.record("https://example.com/OvxsBeacon?cb=3", t0 + 6_000, true);
     expect(detector.isBeaconKey("example.com/OvxsBeacon")).toBe(true);
     // ...and this render's already-pending request to it stops gating
     // immediately (no sweep needed), while staying in the diagnostics map.
@@ -178,6 +178,50 @@ describe("waitForPageReady readiness-flag contract", () => {
 
     await expect(ready).resolves.toMatch(/network_and_dom_stable/);
     expect(pending.has(beaconReq)).toBe(true);
+  });
+
+  it("ages out redirect-orphaned subresources instead of gating forever", async () => {
+    installFakeDom({});
+    // A site that redirects to its custom domain abandons the pre-redirect
+    // document's asset requests; they never settle. Measured on a real site:
+    // nine orphaned .js stuck at 32s pinned the render to the hard timeout
+    // when scripts were exempt from the cap.
+    const orphanedScript = {
+      url: () => "https://origin.lovable.app/assets/BlogPost-abc.js",
+    } as unknown as HTTPRequest;
+    const pending = new Map<HTTPRequest, PendingEntry>([
+      [orphanedScript, { startedAt: Date.now(), key: null }],
+    ]);
+    const ready = waitForPageReady(makeEngine(), pending);
+    ready.catch(() => void 0);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    await expect(ready).resolves.toMatch(/network_and_dom_stable/);
+  });
+
+  it("gives a request issued during a slow navigation its full grace period", async () => {
+    installFakeDom({});
+    // Issued 20s ago, mid page.goto; the readiness wait only starts now.
+    // Aging from the request's own start would retire it on the first tick.
+    const earlyXhr = {
+      url: () => "https://example.com/api/bootstrap",
+    } as unknown as HTTPRequest;
+    const pending = new Map<HTTPRequest, PendingEntry>([
+      [
+        earlyXhr,
+        { startedAt: Date.now() - 20_000, key: null },
+      ],
+    ]);
+    const ready = waitForPageReady(makeEngine(), pending);
+    let settled = false;
+    void ready.then(() => (settled = true)).catch(() => void 0);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(8_000);
+    await expect(ready).resolves.toMatch(/network_and_dom_stable/);
   });
 
   it("still hard-times-out while a fresh tracked request keeps the network busy", async () => {
@@ -273,7 +317,7 @@ describe("throttled-request diagnostics", () => {
       ["https://example.com/api/data", t0 + 3_000],
       ["https://example.com/api/data", t0 + 6_000],
     ] as const) {
-      session.record(url, at);
+      session.record(url, at, true);
     }
     expect(detector.isBeacon("https://collector.example.net/events")).toBe(true);
     expect(detector.isBeacon("https://example.com/api/data")).toBe(true);
@@ -316,3 +360,4 @@ describe("isDegradedRender", () => {
     ).toBe(true);
   });
 });
+

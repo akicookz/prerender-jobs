@@ -426,10 +426,7 @@ async function reportResult({
 async function launchBrowser(): Promise<Browser> {
   try {
     const browser = await puppeteer.launch({
-      // Container image installs Chrome at /usr/bin/chrome; the override
-      // lets local (non-Docker) runs point at a host browser. || not ?? so
-      // an empty-string env var (blank .env line) falls back too.
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chrome",
+      executablePath: "/usr/bin/chrome",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
