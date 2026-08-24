@@ -57,6 +57,8 @@ const ignoredHosts = [
   "kular.ai",
   "mapbox.com",
   "chatwhisperer.ai",
+  "logr-in.com",
+  "emrldtp.cc",
   // Turnstile challenge polling can run for many seconds and never
   // contributes snapshot content.
   "challenges.cloudflare.com",
