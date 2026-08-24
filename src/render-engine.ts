@@ -49,17 +49,26 @@ const MAX_NAVIGATIONS = 10;
 const PROBE_TIMEOUT_LOG_INTERVAL_MS = 5_000;
 const MAX_RENDER_ATTEMPTS = 2;
 // A tracked request still in flight after this long is a long-poll (PubNub,
-// Turnstile challenges) or simply hung — it stops gating network idle but
-// stays in the pending set for diagnostics. Anything that would have
-// finished inside 10s is unaffected. Scaled by the stability multiplier so
-// the extended-stability retry (triggered by a thin first snapshot) waits
-// out genuinely slow data fetches instead of hitting the same 10s cliff:
-// at 4x the cap exceeds the hard timeout, i.e. the retry never ages
-// requests out.
-export const PENDING_MAX_AGE_MS = 10_000;
-// ── Readiness tuning. The *_MS values below are multiplied by the engine's
-// stability multiplier (4x on the extended-stability retry); the timeout and
-// poll interval are absolute.
+// Turnstile challenges), a request orphaned by a redirect, or simply hung —
+// it stops gating network idle but stays in the pending set for diagnostics.
+// Anything that would have finished inside 15s is unaffected. Scaled by the
+// stability multiplier so the extended-stability retry (triggered by a thin
+// first snapshot) waits out genuinely slow data fetches instead of hitting
+// the same cliff: at 4x the cap exceeds the hard timeout, i.e. the retry
+// never ages requests out.
+//
+// Accepted risk: a data call slower than the cap is retired, so its render
+// can resolve network_and_dom_stable on a partially-filled page without
+// being flagged degraded. The retired requests are listed in the
+// renderPendingRequests diagnostic, and a capture thin enough to look like a
+// failed render still gets the 4x retry.
+export const PENDING_MAX_AGE_MS = 15_000;
+// ── Readiness tuning. NETWORK_QUIET_MS, DOM_STABLE_MS, POST_READY_SETTLE_MS
+// and PENDING_MAX_AGE_MS are multiplied by the engine's stability multiplier
+// (4x on the extended-stability retry). Everything else here is absolute,
+// MIN_WAIT_MS/DOM_EXTENDED_WAIT_MS included — evaluateReadySignal is
+// module-level and has no multiplier, so the retry does not widen the
+// network_stable_dom_timeout fallback.
 const HARD_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 400;
 const NETWORK_QUIET_MS = 500;
@@ -950,7 +959,7 @@ export class RenderEngine {
           ctx.beaconSession.record(
             res.url(),
             Date.now(),
-            ctx.readinessSignal.domStableSince !== null,
+            ctx.readinessSignal.domStableSince,
           );
         }
       } catch {
@@ -1400,6 +1409,23 @@ export class RenderEngine {
           }
         }
 
+        // DOM stability is measured every tick, not just while waiting for a
+        // signal: the beacon classifier reads the published epoch on every
+        // response, and a frozen value would stamp hits taken during a
+        // churning DOM as post-stable.
+        const lastDomChange = await this.getLastDomChange({ page });
+        const domIdleTime = now - lastDomChange;
+        if (domIdleTime >= domStableMs) {
+          if (state.domStableSince === null) {
+            state.domStableSince = now;
+          }
+        } else {
+          state.domStableSince = null;
+        }
+        if (readinessSignal) {
+          readinessSignal.domStableSince = state.domStableSince;
+        }
+
         if (signal === null) {
           const active = countActivePending({
             pending: firstPartyReqPending,
@@ -1422,19 +1448,6 @@ export class RenderEngine {
           } else {
             state.networkIdleSince = null;
             state.heartbeatAtNetworkIdle = null;
-          }
-
-          const lastDomChange = await this.getLastDomChange({ page });
-          const domIdleTime = now - lastDomChange;
-          if (domIdleTime >= domStableMs) {
-            if (state.domStableSince === null) {
-              state.domStableSince = now;
-            }
-          } else {
-            state.domStableSince = null;
-          }
-          if (readinessSignal) {
-            readinessSignal.domStableSince = state.domStableSince;
           }
 
           const networkIdleDuration =
@@ -1478,8 +1491,7 @@ export class RenderEngine {
         if (hasMetadata && signal) {
           // Wait a short settle period after both conditions are met so
           // remaining meta tags (description, og:*) finish injecting.
-          const lastDomChange = await this.getLastDomChange({ page });
-          if (now - lastDomChange >= postReadySettleMs) {
+          if (domIdleTime >= postReadySettleMs) {
             this._logger.debug(`[Prerender] Page ready: ${signal.reason}`);
             return settleResolve(signal.reason, signal.detail);
           }

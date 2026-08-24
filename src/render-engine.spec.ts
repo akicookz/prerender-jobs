@@ -123,15 +123,16 @@ describe("waitForPageReady readiness-flag contract", () => {
       url: () => "https://ps.pndsn.com/v2/subscribe/x/y/0",
     } as unknown as HTTPRequest;
     // A long-poll that never settles: before the age cap this rode every
-    // render to hard_timeout; now it stops gating at 10s and the render
-    // resolves via the normal stability heuristics shortly after.
+    // render to hard_timeout; now it stops gating once past
+    // PENDING_MAX_AGE_MS and the render resolves via the normal stability
+    // heuristics shortly after.
     const pending = new Map<HTTPRequest, PendingEntry>([
       [hungRequest, { startedAt: Date.now(), key: null }],
     ]);
     const ready = waitForPageReady(makeEngine(), pending);
     ready.catch(() => void 0);
 
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(20_000);
 
     await expect(readyReason(ready)).resolves.toMatch(/network_and_dom_stable/);
     // Still listed for the pendingRequests diagnostic.
@@ -166,9 +167,10 @@ describe("waitForPageReady readiness-flag contract", () => {
     // Another pipeline's render classifies the endpoint...
     const session = detector.startRender();
     const t0 = Date.now();
-    session.record("https://example.com/OvxsBeacon?cb=1", t0, true);
-    session.record("https://example.com/OvxsBeacon?cb=2", t0 + 3_000, true);
-    session.record("https://example.com/OvxsBeacon?cb=3", t0 + 6_000, true);
+    const stretch = t0 - 1_000;
+    session.record("https://example.com/OvxsBeacon?cb=1", t0, stretch);
+    session.record("https://example.com/OvxsBeacon?cb=2", t0 + 3_000, stretch);
+    session.record("https://example.com/OvxsBeacon?cb=3", t0 + 6_000, stretch);
     expect(detector.isBeaconKey("example.com/OvxsBeacon")).toBe(true);
     // ...and this render's already-pending request to it stops gating
     // immediately (no sweep needed), while staying in the diagnostics map.
@@ -202,7 +204,7 @@ describe("waitForPageReady readiness-flag contract", () => {
     const ready = waitForPageReady(makeEngine(), pending);
     ready.catch(() => void 0);
 
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(20_000);
 
     await expect(readyReason(ready)).resolves.toMatch(/network_and_dom_stable/);
   });
@@ -227,7 +229,7 @@ describe("waitForPageReady readiness-flag contract", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(settled).toBe(false);
 
-    await vi.advanceTimersByTimeAsync(8_000);
+    await vi.advanceTimersByTimeAsync(12_000);
     await expect(readyReason(ready)).resolves.toMatch(/network_and_dom_stable/);
   });
 
@@ -335,7 +337,7 @@ describe("throttled-request diagnostics", () => {
       ["https://example.com/api/data", t0 + 3_000],
       ["https://example.com/api/data", t0 + 6_000],
     ] as const) {
-      session.record(url, at, true);
+      session.record(url, at, t0 - 1_000);
     }
     expect(detector.isBeacon("https://collector.example.net/events")).toBe(true);
     expect(detector.isBeacon("https://example.com/api/data")).toBe(true);

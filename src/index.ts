@@ -805,8 +805,8 @@ async function runPipelineStreams({
   }
   const requestStats = RequestStats.register();
   // One beacon detector for the whole job: every render is the same site, so
-  // repeat-fire hit counts accumulate across renders and endpoints classified
-  // early stop gating readiness in every later render.
+  // a verdict reached in one render stops that endpoint gating readiness in
+  // all later ones. Hit counts are per-render (see BeaconRenderSession).
   const beaconDetector = config.disableBeaconDetector
     ? null
     : BeaconDetector.register();

@@ -11,11 +11,13 @@ import { isIgnoredHost } from "./ignored-endpoints";
  * network-idle clock but never the DOM-stability clock, since its responses
  * change nothing. Within one render an endpoint must complete successfully
  * BEACON_MIN_HITS times over BEACON_MIN_SPAN_MS, BEACON_MIN_POST_STABLE_HITS
- * of them after the DOM went stable. Callers must not record 4xx/5xx (a
- * 429-retry loop otherwise looks like repeat-fire), and a data fetch mutates
- * the DOM when it lands, resetting stability — so neither retries nor query
- * waterfalls can qualify. Verdicts are shared job-wide; every render is the
- * same site.
+ * of them inside a SINGLE unbroken DOM-stable stretch. Callers must not
+ * record 4xx/5xx (a 429-retry loop otherwise looks like repeat-fire), and a
+ * data fetch mutates the DOM when it lands, which ends the stretch — so
+ * neither retries nor query waterfalls can qualify, however many operations
+ * share one endpoint (endpointKey drops the query, so every GraphQL/tRPC
+ * call collapses to one key). Verdicts are shared job-wide; every render is
+ * the same site.
  *
  * Only readiness gating is affected — requests still load normally — so a
  * false positive costs at most an early snapshot behind the DOM/metadata
@@ -25,8 +27,9 @@ export const BEACON_MIN_HITS = 3;
 export const BEACON_MIN_SPAN_MS = 5_000;
 /**
  * One post-stable hit is not enough: a lazy query can fire once into a
- * settled page and only then mutate it. Two means the endpoint kept firing
- * across a DOM-stable stretch it never disturbed.
+ * settled page and only then mutate it. Two hits in the same stretch means
+ * the endpoint kept firing across a span of DOM stability it never
+ * disturbed — a page's own data calls end the stretch when they land.
  */
 export const BEACON_MIN_POST_STABLE_HITS = 2;
 // Per-render memory bound. Overflow leaves further endpoints untracked for
@@ -37,7 +40,10 @@ const MAX_TRACKED_ENDPOINTS_PER_RENDER = 500;
 type RenderHitState = {
   firstAt: number;
   hits: number;
+  /** Hits so far inside `epoch`; reset whenever a new stretch begins. */
   postStableHits: number;
+  /** The DOM-stable stretch those hits belong to (its start timestamp). */
+  epoch: number | null;
 };
 
 export type BeaconRecord = {
@@ -128,13 +134,14 @@ export class BeaconRenderSession {
 
   /**
    * Record one successfully completed xhr/fetch. Callers must filter to
-   * xhr/fetch below 400 (see the class doc). `domStable` is false before the
-   * readiness loop starts, so boot traffic never counts as post-stable.
+   * xhr/fetch below 400 (see the class doc). `domStableSince` identifies the
+   * current DOM-stable stretch (null while the DOM is changing, and before
+   * the readiness loop starts, so boot traffic never counts).
    */
   record(
     url: string | URL,
     now: number,
-    domStable: boolean,
+    domStableSince: number | null,
   ): BeaconRecord | null {
     const key = BeaconDetector.endpointKey(url);
     if (!key) {
@@ -154,12 +161,19 @@ export class BeaconRenderSession {
         }
         return { key, classified: false, newlyClassified: false };
       }
-      state = { firstAt: now, hits: 0, postStableHits: 0 };
+      state = { firstAt: now, hits: 0, postStableHits: 0, epoch: null };
       this._hits.set(key, state);
     }
     state.hits++;
-    if (domStable) {
+    if (domStableSince === null) {
+      // The page is still changing; nothing to learn from this hit.
+    } else if (domStableSince === state.epoch) {
       state.postStableHits++;
+    } else {
+      // A new stretch: the DOM moved since the last post-stable hit, so the
+      // tally starts over rather than accumulating across the change.
+      state.epoch = domStableSince;
+      state.postStableHits = 1;
     }
     const span = now - state.firstAt;
     if (
