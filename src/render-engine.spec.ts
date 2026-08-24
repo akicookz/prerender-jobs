@@ -139,7 +139,7 @@ describe("waitForPageReady readiness-flag contract", () => {
     expect(pending.has(hungRequest)).toBe(true);
   });
 
-  it("scales the age cap on the extended-stability retry (no 10s cliff)", async () => {
+  it("keeps the same age cap on the extended-stability retry", async () => {
     installFakeDom({});
     const hungRequest = {
       url: () => "https://example.com/api/slow-data",
@@ -147,18 +147,18 @@ describe("waitForPageReady readiness-flag contract", () => {
     const pending = new Map<HTTPRequest, PendingEntry>([
       [hungRequest, { startedAt: Date.now(), key: null }],
     ]);
-    // At 4x the cap (40s) exceeds the hard timeout, so a still-pending data
-    // request holds the retry render all the way to hard_timeout instead of
-    // being aged out at 10s like on the first attempt.
+    // The quiet/stable windows widen 4x on the retry, but the age cap does
+    // not: scaling it past the hard timeout would let one never-settling
+    // request hold every retry open for the full 30s.
     const ready = waitForPageReady(
       makeEngine({ extendedStability: true }),
       pending,
     );
     ready.catch(() => void 0);
 
-    await vi.advanceTimersByTimeAsync(31_000);
+    await vi.advanceTimersByTimeAsync(25_000);
 
-    await expect(readyReason(ready)).resolves.toBe("hard_timeout");
+    await expect(readyReason(ready)).resolves.toMatch(/network_and_dom_stable/);
   });
 
   it("stops letting beacon-classified endpoints gate idle, across pipelines", async () => {

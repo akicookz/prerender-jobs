@@ -51,22 +51,24 @@ const MAX_RENDER_ATTEMPTS = 2;
 // A tracked request still in flight after this long is a long-poll (PubNub,
 // Turnstile challenges), a request orphaned by a redirect, or simply hung —
 // it stops gating network idle but stays in the pending set for diagnostics.
-// Anything that would have finished inside 15s is unaffected. Scaled by the
-// stability multiplier so the extended-stability retry (triggered by a thin
-// first snapshot) waits out genuinely slow data fetches instead of hitting
-// the same cliff: at 4x the cap exceeds the hard timeout, i.e. the retry
-// never ages requests out.
+// Anything that would have finished inside 15s is unaffected. Deliberately
+// NOT scaled by the stability multiplier: at 4x the cap would exceed the
+// hard timeout, so a request that never settles (a long-poll, or one
+// orphaned by a redirect) would hold every extended-stability retry open for
+// the full 30s.
 //
 // Accepted risk: a data call slower than the cap is retired, so its render
 // can resolve network_and_dom_stable on a partially-filled page without
-// being flagged degraded. The retired requests are listed in the
-// renderPendingRequests diagnostic, and a capture thin enough to look like a
-// failed render still gets the 4x retry.
+// being flagged degraded. Retired requests stay listed in the
+// renderPendingRequests diagnostic. The extended-stability retry does not
+// rescue this case, since it widens the quiet/stable windows but not this
+// cap: the same fetch ages out again on the second attempt.
 export const PENDING_MAX_AGE_MS = 15_000;
-// ── Readiness tuning. NETWORK_QUIET_MS, DOM_STABLE_MS, POST_READY_SETTLE_MS
-// and PENDING_MAX_AGE_MS are multiplied by the engine's stability multiplier
-// (4x on the extended-stability retry). Everything else here is absolute,
-// MIN_WAIT_MS/DOM_EXTENDED_WAIT_MS included — evaluateReadySignal is
+// ── Readiness tuning. NETWORK_QUIET_MS, DOM_STABLE_MS and
+// POST_READY_SETTLE_MS are multiplied by the engine's stability multiplier
+// (4x on the extended-stability retry). Everything else here is absolute:
+// PENDING_MAX_AGE_MS by design (see its comment), and
+// MIN_WAIT_MS/DOM_EXTENDED_WAIT_MS because evaluateReadySignal is
 // module-level and has no multiplier, so the retry does not widen the
 // network_stable_dom_timeout fallback.
 const HARD_TIMEOUT_MS = 30_000;
@@ -449,8 +451,9 @@ export class RenderEngine {
     renderToken?: string;
     renderTokenHosts?: string[];
     internalKeyHosts?: string[];
-    // Widens the readiness quiet/stable windows 4x. Used when retrying a
-    // render whose first attempt produced a loading-shell snapshot.
+    // Widens the readiness quiet/stable windows 4x, but not
+    // PENDING_MAX_AGE_MS. Used when retrying a render whose first attempt
+    // produced a loading-shell snapshot.
     extendedStability?: boolean;
     // Job-wide cache of the site's static assets; repeat requests are
     // answered from memory instead of re-hitting the customer's origin.
@@ -1314,7 +1317,7 @@ export class RenderEngine {
     const networkQuietMs = NETWORK_QUIET_MS * mult;
     const domStableMs = DOM_STABLE_MS * mult;
     const postReadySettleMs = POST_READY_SETTLE_MS * mult;
-    const pendingMaxAgeMs = PENDING_MAX_AGE_MS * mult;
+    const pendingMaxAgeMs = PENDING_MAX_AGE_MS;
 
     const startedAt = Date.now();
     const state: ReadinessState = {
