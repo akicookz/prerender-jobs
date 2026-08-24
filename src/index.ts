@@ -7,6 +7,7 @@ import * as TelegramBot from "node-telegram-bot-api";
 import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
 import { AssetCache } from "./asset-cache";
+import { BeaconDetector } from "./beacon-detector";
 import { BrowserPool } from "./browser-pool";
 import { stripTrackingParams } from "./cache-manager/kv-key-utils";
 import { R2Loader } from "./cache-manager/r2-loader";
@@ -425,7 +426,10 @@ async function reportResult({
 async function launchBrowser(): Promise<Browser> {
   try {
     const browser = await puppeteer.launch({
-      executablePath: "/usr/bin/chrome",
+      // Container image installs Chrome at /usr/bin/chrome; the override
+      // lets local (non-Docker) runs point at a host browser. || not ?? so
+      // an empty-string env var (blank .env line) falls back too.
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chrome",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -452,6 +456,7 @@ async function runPipeline({
   browser,
   assetCache,
   requestStats,
+  beaconDetector,
   snapshotDir,
 }: {
   pipelineNumber: number;
@@ -461,6 +466,7 @@ async function runPipeline({
   browser: Browser;
   assetCache: AssetCache | null;
   requestStats: RequestStats;
+  beaconDetector: BeaconDetector | null;
   snapshotDir: string | null;
 }): Promise<PipelineResult> {
   const path = extractPathFromUrl(urlToRender);
@@ -500,6 +506,7 @@ async function runPipeline({
       extendedStability: attempt > 1,
       assetCache: assetCache ?? undefined,
       requestStats,
+      beaconDetector: beaconDetector ?? undefined,
     });
 
     try {
@@ -682,12 +689,14 @@ async function reportRunSummary({
   pipelineResults,
   requestStats,
   assetCache,
+  beaconDetector,
   snapshotDir,
   concurrency,
 }: {
   pipelineResults: PipelineResult[];
   requestStats: RequestStats;
   assetCache: AssetCache | null;
+  beaconDetector: BeaconDetector | null;
   snapshotDir: string | null;
   concurrency: number;
 }): Promise<void> {
@@ -705,6 +714,13 @@ async function reportRunSummary({
     `[Summary] Outbound requests: ${reqStats.originRequests} to customer origin, ` +
       `${reqStats.thirdPartyRequests} to third parties`,
   );
+
+  const beaconEndpoints = beaconDetector?.classifiedEndpoints() ?? [];
+  if (beaconEndpoints.length > 0) {
+    logger.info(
+      `[BeaconDetector] ${beaconEndpoints.length} beacon endpoint(s) classified this job: ${beaconEndpoints.join(", ")}`,
+    );
+  }
 
   const cacheStats = assetCache ? assetCache.stats() : null;
   const cacheableTotal = cacheStats ? cacheStats.hits + cacheStats.misses : 0;
@@ -790,6 +806,15 @@ async function runPipelineStreams({
     logger.info(`[AssetCache] Disabled via DISABLE_ASSET_CACHE`);
   }
   const requestStats = RequestStats.register();
+  // One beacon detector for the whole job: every render is the same site, so
+  // repeat-fire hit counts accumulate across renders and endpoints classified
+  // early stop gating readiness in every later render.
+  const beaconDetector = config.disableBeaconDetector
+    ? null
+    : BeaconDetector.register();
+  if (!beaconDetector) {
+    logger.info(`[BeaconDetector] Disabled via DISABLE_BEACON_DETECTOR`);
+  }
 
   let snapshotDir: string | null = null;
   if (config.outputDir) {
@@ -869,6 +894,7 @@ async function runPipelineStreams({
             browser,
             assetCache,
             requestStats,
+            beaconDetector,
             snapshotDir,
           }),
         );
@@ -896,6 +922,7 @@ async function runPipelineStreams({
       pipelineResults,
       requestStats,
       assetCache,
+      beaconDetector,
       snapshotDir,
       concurrency,
     });

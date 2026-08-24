@@ -8,6 +8,8 @@ import {
 import { getHostname } from "tldts";
 import { normalizeTokenHost } from "./util";
 import { AssetCache } from "./asset-cache";
+import { BeaconDetector, type BeaconRenderSession } from "./beacon-detector";
+import { isIgnoredHost, isIgnoredPath } from "./ignored-endpoints";
 import { RequestStats } from "./request-stats";
 import { AppLogger } from "./logger";
 import { RenderTracer } from "./render-tracer";
@@ -46,6 +48,15 @@ const MAX_NAVIGATIONS = 10;
 // every tick, and one line per occurrence would bury the rest of the render log.
 const PROBE_TIMEOUT_LOG_INTERVAL_MS = 5_000;
 const MAX_RENDER_ATTEMPTS = 2;
+// A tracked request still in flight after this long is a long-poll (PubNub,
+// Turnstile challenges) or simply hung — it stops gating network idle but
+// stays in the pending set for diagnostics. Anything that would have
+// finished inside 10s is unaffected. Scaled by the stability multiplier so
+// the extended-stability retry (triggered by a thin first snapshot) waits
+// out genuinely slow data fetches instead of hitting the same 10s cliff:
+// at 4x the cap exceeds the hard timeout, i.e. the retry never ages
+// requests out.
+export const PENDING_MAX_AGE_MS = 10_000;
 // Static asset types eligible for the job-wide AssetCache. Documents and
 // xhr/fetch responses must never be cached — snapshots would capture stale
 // data.
@@ -74,6 +85,11 @@ export type RenderDiagnostics = {
   // 429 responses on xhr/fetch data calls (non-ignored hosts) during the
   // render — the origin-under-pressure signal batch reports aggregate.
   throttledRequestCount: number;
+  // Endpoints (host+path keys) whose tracked requests were actually
+  // suppressed from readiness gating during this render because they were
+  // beacon-classified. Statically-ignored endpoints never appear — they are
+  // filtered before tracking.
+  beaconEndpoints: string[];
 };
 
 export interface RenderResult {
@@ -111,10 +127,10 @@ export function isDegradedRender({
 }
 
 // R2 caps total object metadata at 8192 bytes, and values must be strings.
-// Keep the diagnostics blobs well under that (worst case here is ~3KB across
-// the three lists, leaving headroom for the url/userAgent/seo* keys). Counts
-// are stored separately so a trimmed list stays distinguishable from a
-// complete one.
+// Keep the diagnostics blobs well under that (worst case here is ~4.2KB
+// across the five lists, leaving headroom for the url/userAgent/seo* keys).
+// Counts are stored separately so a trimmed list stays distinguishable from
+// a complete one.
 export function renderDiagnosticsToMetadata(
   d: RenderDiagnostics,
 ): Record<string, string> {
@@ -167,6 +183,11 @@ export function renderDiagnosticsToMetadata(
       800,
     ),
     renderThrottledRequestCount: String(d.throttledRequestCount),
+    renderBeaconEndpointCount: String(d.beaconEndpoints.length),
+    renderBeaconEndpoints: fitJsonArray(
+      d.beaconEndpoints.map((e) => trunc(e, 120)),
+      400,
+    ),
   };
 }
 
@@ -194,6 +215,7 @@ export class RenderEngine {
   private readonly _stabilityMultiplier: number;
   private readonly _assetCache: AssetCache | null;
   private readonly _requestStats: RequestStats | null;
+  private readonly _beaconDetector: BeaconDetector | null;
   private readonly _logger: AppLogger;
   private _probeTimeouts = 0;
   private _lastProbeTimeoutLogAt = 0;
@@ -209,6 +231,7 @@ export class RenderEngine {
     extendedStability,
     assetCache,
     requestStats,
+    beaconDetector,
   }: {
     targetUrl: string;
     browser: Browser;
@@ -225,6 +248,9 @@ export class RenderEngine {
     assetCache?: AssetCache;
     // Job-wide tally of outbound/blocked requests for the end-of-run summary.
     requestStats?: RequestStats;
+    // Job-wide behavioral beacon classification; classified endpoints stop
+    // gating readiness (their requests still load normally).
+    beaconDetector?: BeaconDetector;
   }) {
     return new RenderEngine(
       targetUrl,
@@ -237,6 +263,7 @@ export class RenderEngine {
       extendedStability ?? false,
       assetCache ?? null,
       requestStats ?? null,
+      beaconDetector ?? null,
     );
   }
 
@@ -251,6 +278,7 @@ export class RenderEngine {
     extendedStability: boolean,
     assetCache: AssetCache | null,
     requestStats: RequestStats | null,
+    beaconDetector: BeaconDetector | null,
   ) {
     this._url = targetUrl;
     this._targetHost = normalizeTokenHost(getHostname(targetUrl) ?? "");
@@ -263,6 +291,7 @@ export class RenderEngine {
     );
     this._assetCache = assetCache;
     this._requestStats = requestStats;
+    this._beaconDetector = beaconDetector;
     // Cover both apex and www forms so requests to either routing hostname
     // carry the key.
     this._internalKeyHosts = new Set(
@@ -392,17 +421,33 @@ export class RenderEngine {
           const status = res.status();
           if (status < 400) return;
           const url = res.url();
-          if (this.isIgnoredHost(getHostname(url) ?? "")) return;
+          if (isIgnoredHost(getHostname(url) ?? "")) return;
           this._logger.debug(
             `[ResponseError] ${status} ${res.request().resourceType()} ${url}`,
           );
           const resourceType = res.request().resourceType();
           if (
             status === 429 &&
-            (resourceType === "xhr" || resourceType === "fetch") &&
-            !this.isIgnoredPath(new URL(url).pathname)
+            (resourceType === "xhr" || resourceType === "fetch")
           ) {
-            diagnostics.throttledRequestCount++;
+            const parsed = new URL(url);
+            // A rate-limited third-party telemetry collector is not origin
+            // pressure — the beacon guard keeps classified endpoints out of
+            // the throttled count that feeds render-cap demotion. Customer
+            // hosts are exempt from that guard: a 429 from the customer's
+            // own origin is always origin pressure, even if the endpoint's
+            // request pattern got it classified (429-retry loops look like
+            // repeat-fire).
+            const reqHost = normalizeTokenHost(parsed.hostname);
+            const isCustomerHost =
+              reqHost === this._targetHost ||
+              this._internalKeyHosts.has(reqHost);
+            if (
+              !isIgnoredPath(parsed.pathname) &&
+              (isCustomerHost || !this._beaconDetector?.isBeacon(parsed))
+            ) {
+              diagnostics.throttledRequestCount++;
+            }
           }
         } catch {
           // ignore
@@ -510,9 +555,23 @@ export class RenderEngine {
       }
     });
 
-    // Attach request tracker before navigation so requests during page.goto are captured
-    const firstPartyReqPending = new Set<HTTPRequest>();
+    // Attach request tracker before navigation so requests during page.goto
+    // are captured. Entries carry their start timestamp and beacon endpoint
+    // key; waitForPageReady filters aged-out and beacon-classified entries
+    // from the idle computation, but everything stays here for the
+    // pendingRequests diagnostic.
+    const firstPartyReqPending = new Map<
+      HTTPRequest,
+      { startedAt: number; key: string | null }
+    >();
     const outgoingRequests = new Set<HTTPRequest>();
+    // Per-render hit tracking; classification verdicts are shared job-wide
+    // through the detector.
+    const beaconSession: BeaconRenderSession | null =
+      this._beaconDetector?.startRender() ?? null;
+    // Endpoints whose tracked requests were actually suppressed from
+    // readiness gating this render (filled by waitForPageReady).
+    const suppressedBeaconKeys = new Set<string>();
 
     page.on("request", (req: HTTPRequest) => {
       let url: URL;
@@ -587,9 +646,26 @@ export class RenderEngine {
 
       outgoingRequests.add(req);
 
+      // Behavioral beacon hit-recording (xhr/fetch only — other resource
+      // types are never readiness-gated cross-site). Requests are always
+      // tracked; suppression of classified endpoints happens inside
+      // waitForPageReady's idle computation, so diagnostics keep the full
+      // pending picture and a classification made by one pipeline takes
+      // effect in every concurrent render immediately.
+      let beaconKey: string | null = null;
+      if (
+        beaconSession &&
+        (resourceType === "fetch" || resourceType === "xhr")
+      ) {
+        beaconKey = beaconSession.record(url, Date.now())?.key ?? null;
+      }
+
       try {
         if (this.shouldTrackReq({ req, targetHost, path: url.pathname })) {
-          firstPartyReqPending.add(req);
+          firstPartyReqPending.set(req, {
+            startedAt: Date.now(),
+            key: beaconKey,
+          });
         }
       } catch {
         void 0;
@@ -644,6 +720,7 @@ export class RenderEngine {
     const readyReason = await this.waitForPageReady({
       page,
       firstPartyReqPending,
+      suppressedBeaconKeys,
     });
     this._logger.debug(`[Prerender] Snapshot triggered by: ${readyReason}`);
     if (!response) {
@@ -694,9 +771,12 @@ export class RenderEngine {
         durationMs: Date.now() - diagnostics.startedAt,
         throttledRequestCount: diagnostics.throttledRequestCount,
         failedRequests: diagnostics.failedRequests,
-        pendingRequests: Array.from(firstPartyReqPending, (req) => req.url()),
+        pendingRequests: Array.from(firstPartyReqPending.keys(), (req) =>
+          req.url(),
+        ),
         consoleErrors: diagnostics.consoleErrors,
         pageErrors: diagnostics.pageErrors,
+        beaconEndpoints: Array.from(suppressedBeaconKeys),
       },
     };
   }
@@ -785,7 +865,7 @@ export class RenderEngine {
         return false;
       }
 
-      if (this.isIgnoredHost(host) || this.isIgnoredPath(path)) {
+      if (isIgnoredHost(host) || isIgnoredPath(path)) {
         this._logger.debug(`[Prerender] Ignoring request to ${req.url()}`);
         return false;
       }
@@ -807,81 +887,6 @@ export class RenderEngine {
     } catch {
       return false;
     }
-  }
-
-  private isIgnoredPath(path: string): boolean {
-    // Telemetry that must not gate the snapshot: a repeatedly-firing beacon
-    // resets the network-idle clock and rides every render to the hard
-    // timeout. The requests still load normally. ~flock.js and /__l5e/
-    // (events.js, trackevents) are Lovable's injected analytics;
-    // track_growth_event is Lovable's growth-telemetry Supabase RPC (fetch/xhr
-    // are tracked regardless of host, so a host rule can't catch it).
-    const ignoredPaths = [
-      "fb-conversions-api",
-      "~flock.js",
-      "__l5e/",
-      "track_growth_event",
-    ];
-    return ignoredPaths.some((p) => path.includes(p));
-  }
-
-  private isIgnoredHost(host: string): boolean {
-    // Domains to ignore for network idle detection (analytics, fonts, ads)
-    const ignoredHosts = [
-      "google.com",
-      "google.co.uk",
-      "google-analytics.com",
-      "googletagmanager.com",
-      "fonts.googleapis.com",
-      "fonts.gstatic.com",
-      "fonts.reown.com",
-      "www.googletagmanager.com",
-      "analytics.google.com",
-      "facebook.com",
-      "www.facebook.com",
-      "connect.facebook.net",
-      "brilliantlocco.com",
-      "doubleclick.net",
-      "googlesyndication.com",
-      "hotjar.com",
-      "hotjar.io",
-      "clarity.ms",
-      "segment.io",
-      "segment.com",
-      "mixpanel.com",
-      "amplitude.com",
-      "posthog.com",
-      "intercom.io",
-      "crisp.chat",
-      "sentry.io",
-      "tawk.to",
-      "drift.com",
-      "zendesk.com",
-      "hubspot.com",
-      "hs-analytics.net",
-      "hs-scripts.com",
-      "freshdesk.com",
-      "livechatinc.com",
-      "fullstory.com",
-      "heap.io",
-      "heapanalytics.com",
-      "logrocket.com",
-      "mouseflow.com",
-      "optimizely.com",
-      "cloudflareinsights.com",
-      "radar.snitcher.com",
-      "liadm.com",
-      "js.zi-scripts.com",
-      "ads.linkedin.com",
-      "kular.ai",
-      "mapbox.com",
-      "chatwhisperer.ai",
-      // Turnstile challenge polling can run for many seconds and never
-      // contributes snapshot content.
-      "challenges.cloudflare.com",
-      "pndsn.com",
-    ];
-    return ignoredHosts.some((h) => host === h || host.endsWith(`.${h}`));
   }
 
   // Readiness probes run against a page that may be busy or mid-navigation:
@@ -1120,9 +1125,16 @@ export class RenderEngine {
   private async waitForPageReady({
     page,
     firstPartyReqPending,
+    suppressedBeaconKeys,
   }: {
     page: Page;
-    firstPartyReqPending: Set<HTTPRequest>;
+    firstPartyReqPending: Map<
+      HTTPRequest,
+      { startedAt: number; key: string | null }
+    >;
+    // Filled with the endpoint keys whose requests were suppressed from the
+    // idle computation because they are beacon-classified (diagnostics).
+    suppressedBeaconKeys?: Set<string>;
   }): Promise<string> {
     // Readiness detection constants
     const HARD_TIMEOUT_MS = 30_000;
@@ -1230,7 +1242,27 @@ export class RenderEngine {
         }
 
         if (!signalReady) {
-          if (firstPartyReqPending.size === 0) {
+          // Two classes of tracked requests stop gating idle (but stay in
+          // the map for the pendingRequests diagnostic): beacon-classified
+          // endpoints (checked live, so a classification made by any
+          // concurrent pipeline applies here immediately), and requests
+          // pending longer than the age cap — long-polls or hung requests.
+          const pendingMaxAgeMs =
+            PENDING_MAX_AGE_MS * this._stabilityMultiplier;
+          let activePending = 0;
+          for (const { startedAt, key } of firstPartyReqPending.values()) {
+            if (
+              key !== null &&
+              this._beaconDetector?.isBeaconKey(key) === true
+            ) {
+              suppressedBeaconKeys?.add(key);
+              continue;
+            }
+            if (now - startedAt < pendingMaxAgeMs) {
+              activePending++;
+            }
+          }
+          if (activePending === 0) {
             if (state.networkIdleSince === null) {
               state.networkIdleSince = now;
               state.heartbeatAtNetworkIdle = await this.getHeartbeatTick({

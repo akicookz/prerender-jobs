@@ -70,6 +70,7 @@ enum ConfigEnvVariables {
   RENDER_TOKEN_HOSTS = "RENDER_TOKEN_HOSTS",
   OUTPUT_DIR = "OUTPUT_DIR",
   DISABLE_ASSET_CACHE = "DISABLE_ASSET_CACHE",
+  DISABLE_BEACON_DETECTOR = "DISABLE_BEACON_DETECTOR",
 }
 
 export interface PathEntry {
@@ -132,6 +133,9 @@ export interface Configuration {
   // Disables the job-wide asset cache, so every render fetches all assets
   // from the origin — for A/B-measuring the cache's effect locally
   disableAssetCache: boolean;
+  // Kill switch for the behavioral beacon detector (readiness gating falls
+  // back to the static ignore lists alone).
+  disableBeaconDetector: boolean;
 }
 
 function requireEnv(name: ConfigEnvVariables): string {
@@ -274,6 +278,11 @@ export function loadConfig(): Configuration {
     false,
   );
 
+  const disableBeaconDetector = boolEnv(
+    ConfigEnvVariables.DISABLE_BEACON_DETECTOR,
+    false,
+  );
+
   return {
     batchId,
     userId,
@@ -303,5 +312,6 @@ export function loadConfig(): Configuration {
     renderTokenHosts,
     outputDir,
     disableAssetCache,
+    disableBeaconDetector,
   };
 }
