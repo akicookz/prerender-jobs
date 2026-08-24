@@ -27,6 +27,7 @@ import { AppLogger, INDENT } from "./logger";
 import {
   isDegradedRender,
   RenderEngine,
+  type ReadyReason,
   type RenderResult,
 } from "./render-engine";
 import { RequestStats } from "./request-stats";
@@ -53,7 +54,7 @@ interface PipelineResult {
   /** Wall-clock of the successful render attempt, from RenderDiagnostics. */
   renderDurationMs?: number;
   /** What ended the readiness wait, from RenderDiagnostics. */
-  readyReason?: string;
+  readyReason?: ReadyReason;
   /** 429s on data calls during the render, from RenderDiagnostics. */
   throttledRequestCount?: number;
   /** Why the path failed — unset on success. */
@@ -246,11 +247,11 @@ async function reportResult({
   let degradedPathCount = 0;
   for (const r of urlResultMap.values()) {
     if (!r.isRendered) continue;
-    const reason = (r.readyReason ?? "").split(" ")[0] || "unknown";
+    const reason: string = r.readyReason ?? "unknown";
     readyReasons[reason] = (readyReasons[reason] ?? 0) + 1;
     if (
       isDegradedRender({
-        readyReason: r.readyReason ?? "",
+        readyReason: r.readyReason,
         throttledRequestCount: r.throttledRequestCount ?? 0,
       })
     ) {

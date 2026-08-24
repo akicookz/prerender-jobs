@@ -57,6 +57,146 @@ const MAX_RENDER_ATTEMPTS = 2;
 // at 4x the cap exceeds the hard timeout, i.e. the retry never ages
 // requests out.
 export const PENDING_MAX_AGE_MS = 10_000;
+// ── Readiness tuning. The *_MS values below are multiplied by the engine's
+// stability multiplier (4x on the extended-stability retry); the timeout and
+// poll interval are absolute.
+const HARD_TIMEOUT_MS = 30_000;
+const POLL_INTERVAL_MS = 400;
+const NETWORK_QUIET_MS = 500;
+const DOM_STABLE_MS = 500;
+// After network+DOM are stable, wait an extra period for a final DOM settle
+// before snapshotting (covers late Helmet injections).
+const POST_READY_SETTLE_MS = 300;
+// Minimum injected-heartbeat ticks (100ms each) after the network goes quiet
+// before "stable" is believable — proves the renderer's main thread got CPU
+// time to turn downloaded code into DOM instead of being starved mid-boot.
+const MIN_HEARTBEAT_TICKS_SINCE_IDLE = 3;
+// Floor before any heuristic capture, and how much longer a network-stable
+// page waits for its DOM to settle before we snapshot anyway.
+const MIN_WAIT_MS = 500;
+const DOM_EXTENDED_WAIT_MS = 3_000;
+
+/**
+ * Whether a request should gate readiness. fetch/xhr count from any host —
+ * SPAs fetch from API subdomains and third-party CMS endpoints — while other
+ * types only count first-party. Statically-ignored hosts and paths never do.
+ */
+export function shouldTrackRequest({
+  resourceType,
+  host,
+  path,
+  targetHost,
+}: {
+  resourceType: string;
+  host: string;
+  path: string;
+  targetHost: string;
+}): boolean {
+  if (!host || isIgnoredHost(host) || isIgnoredPath(path)) {
+    return false;
+  }
+  if (resourceType === "fetch" || resourceType === "xhr") {
+    return true;
+  }
+  return host === targetHost && TRACKED_RESOURCE_TYPES.has(resourceType);
+}
+
+const TRACKED_RESOURCE_TYPES = new Set([
+  "document",
+  "script",
+  "xhr",
+  "fetch",
+  "stylesheet",
+  "image",
+]);
+
+/** Signal half of a readiness verdict, before the metadata gate. */
+type ReadySignal = { reason: ReadyReason; detail?: string };
+
+/**
+ * Tracked requests that still gate network idle, and the beacon endpoints
+ * skipped. Both classes stay in the caller's map for the pendingRequests
+ * diagnostic: beacon-classified endpoints (checked live, so a verdict from
+ * any concurrent pipeline applies at once) and requests older than the age
+ * cap — long-polls, hung data calls, and requests orphaned by a redirect.
+ */
+export function countActivePending({
+  pending,
+  now,
+  readinessStartedAt,
+  maxAgeMs,
+  isBeaconKey,
+}: {
+  pending: Map<HTTPRequest, PendingRequestInfo>;
+  now: number;
+  readinessStartedAt: number;
+  maxAgeMs: number;
+  isBeaconKey: (key: string) => boolean;
+}): { count: number; suppressedBeaconKeys: string[] } {
+  let count = 0;
+  const suppressed = new Set<string>();
+  for (const { startedAt, key } of pending.values()) {
+    if (key !== null && isBeaconKey(key)) {
+      suppressed.add(key);
+      continue;
+    }
+    // Age from the later of request start and readiness start: requests
+    // issued during a slow page.goto are already old by the first tick, and
+    // still deserve the full grace period.
+    if (now - Math.max(startedAt, readinessStartedAt) < maxAgeMs) {
+      count++;
+    }
+  }
+  return { count, suppressedBeaconKeys: Array.from(suppressed) };
+}
+
+/**
+ * The readiness verdict from one tick's measurements, or null to keep
+ * waiting. A defined-but-false readiness flag means the app calls itself
+ * mid-load, so the stability fallbacks stay disabled until it flips (or the
+ * caller's hard timeout fires) — otherwise they capture its loading shell.
+ */
+export function evaluateReadySignal({
+  elapsed,
+  appSignaled,
+  flagDefined,
+  networkStable,
+  domStable,
+  networkIdleMs,
+  domIdleMs,
+}: {
+  elapsed: number;
+  appSignaled: boolean;
+  flagDefined: boolean;
+  networkStable: boolean;
+  domStable: boolean;
+  networkIdleMs: number;
+  domIdleMs: number;
+}): ReadySignal | null {
+  // Trust the app signal only once first-party requests have gone quiet — by
+  // then React has painted. DOM stability isn't required: the app has
+  // explicitly declared readiness.
+  if (appSignaled && networkStable) {
+    return {
+      reason: "app_signaled",
+      detail: `network idle ${networkIdleMs}ms`,
+    };
+  }
+  if (flagDefined && !appSignaled) {
+    return null;
+  }
+  if (networkStable && domStable) {
+    return {
+      reason: "network_and_dom_stable",
+      detail: `network idle ${networkIdleMs}ms, DOM stable ${domIdleMs}ms`,
+    };
+  }
+  if (networkStable && elapsed >= MIN_WAIT_MS + DOM_EXTENDED_WAIT_MS) {
+    return { reason: "network_stable_dom_timeout" };
+  }
+  return null;
+}
+
 // Static asset types eligible for the job-wide AssetCache. Documents and
 // xhr/fetch responses must never be cached — snapshots would capture stale
 // data.
@@ -70,10 +210,26 @@ const CACHEABLE_ASSET_TYPES = new Set([
 // loop) can't grow them unbounded.
 const DIAG_MAX_ENTRIES = 50;
 
+/** What ended the readiness wait (see waitForPageReady). */
+export type ReadyReason =
+  | "app_signaled"
+  | "network_and_dom_stable"
+  | "network_stable_dom_timeout"
+  | "hard_timeout"
+  | "hard_timeout_not_ready";
+
+/** A readiness verdict plus the measurements behind it, for diagnostics. */
+export type ReadyOutcome = {
+  reason: ReadyReason;
+  detail?: string;
+  /** Beacon endpoints suppressed from the idle computation this render. */
+  suppressedBeaconKeys: string[];
+};
+
 export type RenderDiagnostics = {
-  // What ended the readiness wait: app_signaled, network_and_dom_stable,
-  // hard_timeout, etc. (see waitForPageReady).
-  readyReason: string;
+  readyReason: ReadyReason;
+  /** Measurements behind the reason, e.g. "network idle 800ms". */
+  readyDetail?: string;
   // Wall-clock from render start to snapshot, in ms.
   durationMs: number;
   failedRequests: { url: string; error: string }[];
@@ -119,10 +275,15 @@ export function isDegradedRender({
   readyReason,
   throttledRequestCount,
 }: {
-  readyReason: string;
+  /** Undefined when the render produced no diagnostics; never degraded. */
+  readyReason: ReadyReason | undefined;
   throttledRequestCount: number;
 }): boolean {
-  return readyReason.startsWith("hard_timeout") || throttledRequestCount > 0;
+  return (
+    readyReason === "hard_timeout" ||
+    readyReason === "hard_timeout_not_ready" ||
+    throttledRequestCount > 0
+  );
 }
 
 // R2 caps total object metadata at 8192 bytes, and values must be strings.
@@ -155,39 +316,54 @@ export function renderDiagnosticsToMetadata(
     }
     return headerSafe(JSON.stringify(out));
   };
-  return {
-    renderReadyReason: headerSafe(d.readyReason),
-    renderDurationMs: String(d.durationMs),
-    renderFailedRequestCount: String(d.failedRequests.length),
-    renderFailedRequests: fitJsonArray(
-      d.failedRequests.map((r) => ({
+  // Each list gets a count key (so a trimmed list stays distinguishable from
+  // a complete one) and a byte budget; the budgets total ~4.2KB.
+  const lists = [
+    {
+      countKey: "renderFailedRequestCount",
+      listKey: "renderFailedRequests",
+      items: d.failedRequests.map((r) => ({
         url: trunc(r.url, 150),
         error: trunc(r.error, 60),
       })),
-      1200,
-    ),
-    renderPendingRequestCount: String(d.pendingRequests.length),
-    renderPendingRequests: fitJsonArray(
-      d.pendingRequests.map((u) => trunc(u, 150)),
-      800,
-    ),
-    renderConsoleErrorCount: String(d.consoleErrors.length),
-    renderConsoleErrors: fitJsonArray(
-      d.consoleErrors.map((s) => trunc(s, 200)),
-      1000,
-    ),
-    renderPageErrorCount: String(d.pageErrors.length),
-    renderPageErrors: fitJsonArray(
-      d.pageErrors.map((s) => trunc(s, 200)),
-      800,
-    ),
+      maxBytes: 1200,
+    },
+    {
+      countKey: "renderPendingRequestCount",
+      listKey: "renderPendingRequests",
+      items: d.pendingRequests.map((u) => trunc(u, 150)),
+      maxBytes: 800,
+    },
+    {
+      countKey: "renderConsoleErrorCount",
+      listKey: "renderConsoleErrors",
+      items: d.consoleErrors.map((e) => trunc(e, 200)),
+      maxBytes: 1000,
+    },
+    {
+      countKey: "renderPageErrorCount",
+      listKey: "renderPageErrors",
+      items: d.pageErrors.map((e) => trunc(e, 200)),
+      maxBytes: 800,
+    },
+    {
+      countKey: "renderBeaconEndpointCount",
+      listKey: "renderBeaconEndpoints",
+      items: d.beaconEndpoints.map((e) => trunc(e, 120)),
+      maxBytes: 400,
+    },
+  ];
+  const metadata: Record<string, string> = {
+    renderReadyReason: d.readyReason,
+    renderReadyDetail: headerSafe(d.readyDetail ?? ""),
+    renderDurationMs: String(d.durationMs),
     renderThrottledRequestCount: String(d.throttledRequestCount),
-    renderBeaconEndpointCount: String(d.beaconEndpoints.length),
-    renderBeaconEndpoints: fitJsonArray(
-      d.beaconEndpoints.map((e) => trunc(e, 120)),
-      400,
-    ),
   };
+  for (const { countKey, listKey, items, maxBytes } of lists) {
+    metadata[countKey] = String(items.length);
+    metadata[listKey] = fitJsonArray(items, maxBytes);
+  }
+  return metadata;
 }
 
 /** One tracked in-flight request, as the idle computation sees it. */
@@ -195,6 +371,18 @@ type PendingRequestInfo = {
   startedAt: number;
   /** Beacon endpoint key (xhr/fetch only), or null. */
   key: string | null;
+};
+
+/** Per-render state shared by the request/response handlers and readiness. */
+type RenderContext = {
+  /** Tracked in-flight requests; readiness decides which of them still gate. */
+  firstPartyReqPending: Map<HTTPRequest, PendingRequestInfo>;
+  /** Everything on the wire, for the unresolved-requests diagnostic. */
+  outgoingRequests: Set<HTTPRequest>;
+  beaconSession: BeaconRenderSession | null;
+  readinessSignal: ReadinessSignal;
+  /** Main-frame navigations to the target host; a loop above MAX_NAVIGATIONS. */
+  navigationCount: number;
 };
 
 /** Readiness state the request/response handlers need to see mid-render. */
@@ -428,40 +616,6 @@ export class RenderEngine {
           }
         }
       });
-      page.on("response", (res: HTTPResponse) => {
-        try {
-          const status = res.status();
-          if (status < 400) return;
-          const url = res.url();
-          if (isIgnoredHost(getHostname(url) ?? "")) return;
-          this._logger.debug(
-            `[ResponseError] ${status} ${res.request().resourceType()} ${url}`,
-          );
-          const resourceType = res.request().resourceType();
-          if (
-            status === 429 &&
-            (resourceType === "xhr" || resourceType === "fetch")
-          ) {
-            const parsed = new URL(url);
-            // A rate-limited third-party collector is not origin pressure,
-            // so classified endpoints stay out of the count that feeds
-            // render-cap demotion. Customer hosts are exempt from that
-            // guard: their 429s are always origin pressure.
-            const reqHost = normalizeTokenHost(parsed.hostname);
-            const isCustomerHost =
-              reqHost === this._targetHost ||
-              this._internalKeyHosts.has(reqHost);
-            if (
-              !isIgnoredPath(parsed.pathname) &&
-              (isCustomerHost || !this._beaconDetector?.isBeacon(parsed))
-            ) {
-              diagnostics.throttledRequestCount++;
-            }
-          }
-        } catch {
-          // ignore
-        }
-      });
       page.on("requestfailed", (req: HTTPRequest) => {
         try {
           const errorText = req.failure()?.errorText || "";
@@ -539,191 +693,21 @@ export class RenderEngine {
     });
     await this.injectPrerenderScripts({ page });
 
-    // Intercept requests to add the internal header only to same-origin requests,
-    // avoiding CORS preflight failures on third-party domains.
-    const targetHost = this._targetHost;
+    // Intercept requests to add the internal header only to same-origin
+    // requests, avoiding CORS preflight failures on third-party domains.
     await page.setRequestInterception(true);
 
     // Detect navigation loops (e.g., infinite redirect between routes)
-    let navigationCount = 0;
-    page.on("framenavigated", (frame) => {
-      this._logger.debug(`[FrameNavigated] ${frame.url()}`);
-      const frameHost = getHostname(frame.url());
-      if (frameHost !== targetHost) {
-        return;
-      }
-      if (frame.parentFrame() !== null) {
-        return;
-      }
-      navigationCount++;
-      if (navigationCount > MAX_NAVIGATIONS) {
-        this._logger.debug(
-          `[Prerender] Navigation loop detected (${navigationCount} navigations), aborting JS execution`,
-        );
-        void page.close().catch(() => void 0);
-      }
-    });
-
-    // Attach request tracker before navigation so requests during page.goto
-    // are captured. Entries carry their start timestamp and beacon endpoint
-    // key; waitForPageReady filters aged-out and beacon-classified entries
-    // from the idle computation, but everything stays here for the
-    // pendingRequests diagnostic.
-    const firstPartyReqPending = new Map<HTTPRequest, PendingRequestInfo>();
-    const outgoingRequests = new Set<HTTPRequest>();
-    // Per-render hit tracking; classification verdicts are shared job-wide
-    // through the detector.
-    const beaconSession: BeaconRenderSession | null =
-      this._beaconDetector?.startRender() ?? null;
-    // Written by waitForPageReady each tick, read by the response handler
-    // below. Null until the readiness loop starts, so boot traffic never
-    // counts as post-stable.
-    const readinessSignal: ReadinessSignal = { domStableSince: null };
-    // Endpoints whose tracked requests were actually suppressed from
-    // readiness gating this render (filled by waitForPageReady).
-    const suppressedBeaconKeys = new Set<string>();
-
-    page.on("request", (req: HTTPRequest) => {
-      let url: URL;
-      try {
-        url = new URL(req.url());
-      } catch {
-        return;
-      }
-
-      const resourceType = req.resourceType();
-
-      // Serve repeat static-asset requests from the job-wide cache so each
-      // bundle/stylesheet/font/image hits the origin once per job, not once
-      // per render. Cache-served requests never reach the network, so they
-      // skip the pending-request tracking below.
-      if (this._assetCache && req.method() === "GET") {
-        const cached = this._assetCache.get(req.url());
-        if (cached) {
-          req
-            .respond({
-              status: 200,
-              contentType: cached.contentType,
-              headers: cached.corsHeaders,
-              body: cached.body,
-            })
-            .catch(() => void 0);
-          return;
-        }
-      }
-
-      // Add the internal prerender header only to same-origin requests
-      const reqHost = normalizeTokenHost(url.hostname);
-      const headers = req.headers();
-      if (reqHost === targetHost) {
-        headers[INTERNAL_PRERENDER_HEADER] = "1";
-      }
-      if (
-        this._internalKey &&
-        (reqHost === targetHost || this._internalKeyHosts.has(reqHost))
-      ) {
-        headers[ENCITED_INTERNAL_KEY_HEADER] = this._internalKey;
-      } else {
-        deleteHeader(headers, ENCITED_INTERNAL_KEY_HEADER);
-      }
-      const tokenForHost = renderTokenFor(
-        url,
-        this._renderTokenHosts,
-        this._renderToken,
-      );
-      if (tokenForHost) {
-        headers[RENDER_TOKEN_HEADER] = tokenForHost;
-      } else {
-        deleteHeader(headers, RENDER_TOKEN_HEADER);
-      }
-      const isCustomerHost =
-        reqHost === targetHost || this._internalKeyHosts.has(reqHost);
-      this._requestStats?.countOutbound({ isCustomerHost });
-      // Reaching here with a cacheable asset means the cache was probed above
-      // and missed — count it so the hit-rate denominator is honest.
-      if (
-        this._assetCache &&
-        isCustomerHost &&
-        req.method() === "GET" &&
-        CACHEABLE_ASSET_TYPES.has(resourceType)
-      ) {
-        this._assetCache.countMiss();
-      }
-      req.continue({ headers }).catch(() => {
-        // If continue fails (e.g. request already handled), ignore
-        return void 0;
-      });
-
-      outgoingRequests.add(req);
-
-      // Behavioral beacon hit-recording (xhr/fetch only — other resource
-      // types are never readiness-gated cross-site). Requests are always
-      // tracked; suppression of classified endpoints happens inside
-      // waitForPageReady's idle computation, so diagnostics keep the full
-      // pending picture and a classification made by one pipeline takes
-      // effect in every concurrent render immediately. Hits are recorded on
-      // the response (below) — only successful completions count.
-      const isDataRequest = resourceType === "fetch" || resourceType === "xhr";
-      const beaconKey =
-        beaconSession && isDataRequest ? BeaconDetector.endpointKey(url) : null;
-
-      try {
-        if (this.shouldTrackReq({ req, targetHost, path: url.pathname })) {
-          firstPartyReqPending.set(req, {
-            startedAt: Date.now(),
-            key: beaconKey,
-          });
-        }
-      } catch {
-        void 0;
-      }
-    });
-
-    if (beaconSession) {
-      page.on("response", (res: HTTPResponse) => {
-        try {
-          const resourceType = res.request().resourceType();
-          if (resourceType !== "xhr" && resourceType !== "fetch") {
-            return;
-          }
-          // 4xx/5xx is the page failing to get its content — a retry loop,
-          // not telemetry.
-          if (res.status() >= 400) {
-            return;
-          }
-          beaconSession.record(
-            res.url(),
-            Date.now(),
-            readinessSignal.domStableSince !== null,
-          );
-        } catch {
-          // ignore
-        }
-      });
-    }
-
-    const settle = (req: HTTPRequest) => {
-      if (outgoingRequests.has(req)) {
-        this._logger.debug(
-          `[Prerender] Request ${req.url()} settled for ${this._url}`,
-        );
-      }
-      outgoingRequests.delete(req);
-      try {
-        firstPartyReqPending.delete(req);
-      } catch {
-        void 0;
-      }
+    const ctx: RenderContext = {
+      firstPartyReqPending: new Map(),
+      outgoingRequests: new Set(),
+      beaconSession: this._beaconDetector?.startRender() ?? null,
+      readinessSignal: { domStableSince: null },
+      navigationCount: 0,
     };
-    page.on("requestfinished", settle);
-    page.on("requestfailed", settle);
-
-    if (this._assetCache) {
-      page.on("response", (res: HTTPResponse) => {
-        this.maybeCacheAsset(res).catch(() => void 0);
-      });
-    }
-
+    this.attachNavigationGuard(page, ctx);
+    this.attachRequestInterceptor(page, ctx);
+    this.attachResponseHandlers(page, ctx, diagnostics);
     const navStartTimestamp = Date.now();
     this._logger.debug(`[Prerender] Navigating to ${this._url}`);
     let response;
@@ -747,22 +731,21 @@ export class RenderEngine {
       `[Prerender] Navigation completed in ${navEndTimestamp - navStartTimestamp}ms for ${this._url}`,
     );
 
-    const readyReason = await this.waitForPageReady({
+    const ready = await this.waitForPageReady({
       page,
-      firstPartyReqPending,
-      suppressedBeaconKeys,
-      readinessSignal,
+      firstPartyReqPending: ctx.firstPartyReqPending,
+      readinessSignal: ctx.readinessSignal,
     });
-    this._logger.debug(`[Prerender] Snapshot triggered by: ${readyReason}`);
+    this._logger.debug(`[Prerender] Snapshot triggered by: ${ready.reason}`);
     if (!response) {
       throw new Error(`Failed to navigate to ${this._url}`);
     }
 
-    if (outgoingRequests.size > 0) {
+    if (ctx.outgoingRequests.size > 0) {
       this._logger.debug(
         "Unresolved requests:",
         JSON.stringify(
-          Array.from(outgoingRequests).map((req) => req.url()),
+          Array.from(ctx.outgoingRequests).map((req) => req.url()),
           null,
           2,
         ),
@@ -780,9 +763,9 @@ export class RenderEngine {
       );
     }
 
-    if (navigationCount > MAX_NAVIGATIONS) {
+    if (ctx.navigationCount > MAX_NAVIGATIONS) {
       throw new RenderFailureError(
-        `Navigation loop detected for ${this._url}: ${navigationCount} navigations (final URL: ${page.url()})`,
+        `Navigation loop detected for ${this._url}: ${ctx.navigationCount} navigations (final URL: ${page.url()})`,
         { reason: "navigation_loop" },
       );
     }
@@ -798,18 +781,218 @@ export class RenderEngine {
       xRobotsTag,
       finalUrl,
       diagnostics: {
-        readyReason,
+        readyReason: ready.reason,
+        readyDetail: ready.detail,
         durationMs: Date.now() - diagnostics.startedAt,
         throttledRequestCount: diagnostics.throttledRequestCount,
         failedRequests: diagnostics.failedRequests,
-        pendingRequests: Array.from(firstPartyReqPending.keys(), (req) =>
+        pendingRequests: Array.from(ctx.firstPartyReqPending.keys(), (req) =>
           req.url(),
         ),
         consoleErrors: diagnostics.consoleErrors,
         pageErrors: diagnostics.pageErrors,
-        beaconEndpoints: Array.from(suppressedBeaconKeys),
+        beaconEndpoints: ready.suppressedBeaconKeys,
       },
     };
+  }
+
+  /** The customer's own hosts: the render target plus its routing domains. */
+  private isCustomerHost(hostname: string): boolean {
+    return (
+      hostname === this._targetHost || this._internalKeyHosts.has(hostname)
+    );
+  }
+
+  /** Abort the render if the page bounces between routes indefinitely. */
+  private attachNavigationGuard(page: Page, ctx: RenderContext): void {
+    page.on("framenavigated", (frame) => {
+      this._logger.debug(`[FrameNavigated] ${frame.url()}`);
+      if (
+        getHostname(frame.url()) !== this._targetHost ||
+        frame.parentFrame() !== null
+      ) {
+        return;
+      }
+      ctx.navigationCount++;
+      if (ctx.navigationCount > MAX_NAVIGATIONS) {
+        this._logger.debug(
+          `[Prerender] Navigation loop detected (${ctx.navigationCount} navigations), aborting JS execution`,
+        );
+        void page.close().catch(() => void 0);
+      }
+    });
+  }
+
+  /**
+   * Serves cached assets, stamps first-party auth headers, and tracks which
+   * requests gate readiness. Must be attached before navigation so requests
+   * issued during page.goto are captured.
+   */
+  private attachRequestInterceptor(page: Page, ctx: RenderContext): void {
+    page.on("request", (req: HTTPRequest) => {
+      let url: URL;
+      try {
+        url = new URL(req.url());
+      } catch {
+        return;
+      }
+      const resourceType = req.resourceType();
+
+      // Serve repeat static-asset requests from the job-wide cache so each
+      // bundle/stylesheet/font/image hits the origin once per job, not once
+      // per render. Cache-served requests never reach the network, so they
+      // skip the pending-request tracking below.
+      if (this._assetCache && req.method() === "GET") {
+        const cached = this._assetCache.get(req.url());
+        if (cached) {
+          req
+            .respond({
+              status: 200,
+              contentType: cached.contentType,
+              headers: cached.corsHeaders,
+              body: cached.body,
+            })
+            .catch(() => void 0);
+          return;
+        }
+      }
+
+      const reqHost = normalizeTokenHost(url.hostname);
+      const isCustomerHost = this.isCustomerHost(reqHost);
+      const headers = req.headers();
+      if (reqHost === this._targetHost) {
+        headers[INTERNAL_PRERENDER_HEADER] = "1";
+      }
+      if (this._internalKey && isCustomerHost) {
+        headers[ENCITED_INTERNAL_KEY_HEADER] = this._internalKey;
+      } else {
+        deleteHeader(headers, ENCITED_INTERNAL_KEY_HEADER);
+      }
+      const tokenForHost = renderTokenFor(
+        url,
+        this._renderTokenHosts,
+        this._renderToken,
+      );
+      if (tokenForHost) {
+        headers[RENDER_TOKEN_HEADER] = tokenForHost;
+      } else {
+        deleteHeader(headers, RENDER_TOKEN_HEADER);
+      }
+      this._requestStats?.countOutbound({ isCustomerHost });
+      // Reaching here with a cacheable asset means the cache was probed above
+      // and missed — count it so the hit-rate denominator is honest.
+      if (
+        this._assetCache &&
+        isCustomerHost &&
+        req.method() === "GET" &&
+        CACHEABLE_ASSET_TYPES.has(resourceType)
+      ) {
+        this._assetCache.countMiss();
+      }
+      req.continue({ headers }).catch(() => void 0);
+
+      ctx.outgoingRequests.add(req);
+      // Classified endpoints are suppressed inside waitForPageReady's idle
+      // computation rather than here, so diagnostics keep the full pending
+      // picture and a verdict from one pipeline applies to every concurrent
+      // render at once. Hits are recorded on the response — only successful
+      // completions count.
+      const isDataRequest = resourceType === "fetch" || resourceType === "xhr";
+      if (
+        shouldTrackRequest({
+          resourceType,
+          host: reqHost,
+          path: url.pathname,
+          targetHost: this._targetHost,
+        })
+      ) {
+        ctx.firstPartyReqPending.set(req, {
+          startedAt: Date.now(),
+          key:
+            ctx.beaconSession && isDataRequest
+              ? BeaconDetector.endpointKey(url)
+              : null,
+        });
+      }
+    });
+  }
+
+  /**
+   * One dispatcher for every response concern: error/throttle diagnostics,
+   * beacon hit recording, and the job-wide asset cache. Settle handlers live
+   * here too, since they close the loop opened by the interceptor.
+   */
+  private attachResponseHandlers(
+    page: Page,
+    ctx: RenderContext,
+    diagnostics: DiagnosticsCollector,
+  ): void {
+    page.on("response", (res: HTTPResponse) => {
+      try {
+        const req = res.request();
+        const resourceType = req.resourceType();
+        const status = res.status();
+        const isDataRequest =
+          resourceType === "xhr" || resourceType === "fetch";
+
+        if (status >= 400 && !isIgnoredHost(getHostname(res.url()) ?? "")) {
+          this._logger.debug(
+            `[ResponseError] ${status} ${resourceType} ${res.url()}`,
+          );
+          if (status === 429 && isDataRequest) {
+            this.countThrottledResponse(res.url(), diagnostics);
+          }
+        }
+
+        // 4xx/5xx is the page failing to get its content — a retry loop, not
+        // telemetry — so only successful data calls build a beacon verdict.
+        if (ctx.beaconSession && isDataRequest && status < 400) {
+          ctx.beaconSession.record(
+            res.url(),
+            Date.now(),
+            ctx.readinessSignal.domStableSince !== null,
+          );
+        }
+      } catch {
+        // ignore
+      }
+      if (this._assetCache) {
+        this.maybeCacheAsset(res).catch(() => void 0);
+      }
+    });
+
+    const settle = (req: HTTPRequest) => {
+      if (ctx.outgoingRequests.has(req)) {
+        this._logger.debug(
+          `[Prerender] Request ${req.url()} settled for ${this._url}`,
+        );
+      }
+      ctx.outgoingRequests.delete(req);
+      ctx.firstPartyReqPending.delete(req);
+    };
+    page.on("requestfinished", settle);
+    page.on("requestfailed", settle);
+  }
+
+  /**
+   * A 429 on a data call is origin pressure, and feeds render-cap demotion —
+   * unless it came from a third-party collector we classified as a beacon
+   * (whose retry pattern is not the customer's origin struggling).
+   */
+  private countThrottledResponse(
+    url: string,
+    diagnostics: DiagnosticsCollector,
+  ): void {
+    const parsed = new URL(url);
+    if (isIgnoredPath(parsed.pathname)) {
+      return;
+    }
+    const isCustomerHost = this.isCustomerHost(
+      normalizeTokenHost(parsed.hostname),
+    );
+    if (isCustomerHost || !this._beaconDetector?.isBeacon(parsed)) {
+      diagnostics.throttledRequestCount++;
+    }
   }
 
   private async maybeCacheAsset(res: HTTPResponse): Promise<void> {
@@ -873,52 +1056,6 @@ export class RenderEngine {
     });
   }
 
-  private shouldTrackReq({
-    req,
-    targetHost,
-    path,
-  }: {
-    req: HTTPRequest;
-    targetHost: string;
-    path: string;
-  }): boolean {
-    const trackResourceTypes = new Set([
-      "document",
-      "script",
-      "xhr",
-      "fetch",
-      "stylesheet",
-      "image",
-    ]);
-    try {
-      const host = getHostname(req.url());
-      if (!host) {
-        return false;
-      }
-
-      if (isIgnoredHost(host) || isIgnoredPath(path)) {
-        this._logger.debug(`[Prerender] Ignoring request to ${req.url()}`);
-        return false;
-      }
-
-      const resourceType = req.resourceType();
-
-      // Always track fetch/xhr regardless of host — SPAs often fetch from
-      // API subdomains (api.example.com) or third-party headless CMS endpoints
-      if (resourceType === "fetch" || resourceType === "xhr") {
-        return true;
-      }
-
-      // For other resource types, only track first-party
-      if (host !== targetHost) {
-        return false;
-      }
-
-      return trackResourceTypes.has(resourceType);
-    } catch {
-      return false;
-    }
-  }
 
   // Readiness probes run against a page that may be busy or mid-navigation:
   // cap every evaluate at a short timeout and fall back instead of throwing.
@@ -1156,31 +1293,19 @@ export class RenderEngine {
   private async waitForPageReady({
     page,
     firstPartyReqPending,
-    suppressedBeaconKeys,
     readinessSignal,
   }: {
     page: Page;
     firstPartyReqPending: Map<HTTPRequest, PendingRequestInfo>;
-    // Filled with the endpoint keys whose requests were suppressed from the
-    // idle computation because they are beacon-classified (diagnostics).
-    suppressedBeaconKeys?: Set<string>;
     // Published each tick so the response handler can tell whether a hit
     // landed on an already-stable DOM (see BeaconDetector).
     readinessSignal?: ReadinessSignal;
-  }): Promise<string> {
-    // Readiness detection constants
-    const HARD_TIMEOUT_MS = 30_000;
-    const NETWORK_QUIET_MS = 500 * this._stabilityMultiplier;
-    const DOM_STABLE_MS = 500 * this._stabilityMultiplier;
-    const POLL_INTERVAL_MS = 400;
-    // After network+DOM are stable, wait an extra period for a final DOM
-    // settle before taking the snapshot (covers late Helmet injections).
-    const POST_READY_SETTLE_MS = 300 * this._stabilityMultiplier;
-    // Minimum injected-heartbeat ticks (100ms each) that must elapse after
-    // the network goes quiet before "stable" is believable — proves the
-    // renderer's main thread actually got CPU time to turn any downloaded
-    // code into DOM, instead of being starved mid-boot.
-    const MIN_HEARTBEAT_TICKS_SINCE_IDLE = 3;
+  }): Promise<ReadyOutcome> {
+    const mult = this._stabilityMultiplier;
+    const networkQuietMs = NETWORK_QUIET_MS * mult;
+    const domStableMs = DOM_STABLE_MS * mult;
+    const postReadySettleMs = POST_READY_SETTLE_MS * mult;
+    const pendingMaxAgeMs = PENDING_MAX_AGE_MS * mult;
 
     const startedAt = Date.now();
     const state: ReadinessState = {
@@ -1190,8 +1315,9 @@ export class RenderEngine {
       domStableSince: null,
       heartbeatAtNetworkIdle: null,
     };
+    const suppressedBeaconKeys = new Set<string>();
 
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<ReadyOutcome>((resolve, reject) => {
       let settled = false;
       let pendingTimeout: NodeJS.Timeout | null = null;
 
@@ -1201,13 +1327,17 @@ export class RenderEngine {
           pendingTimeout = null;
         }
       };
-      const settleResolve = (value: string) => {
+      const settleResolve = (reason: ReadyReason, detail?: string) => {
         if (settled) {
           return;
         }
         settled = true;
         cleanup();
-        resolve(value);
+        resolve({
+          reason,
+          detail,
+          suppressedBeaconKeys: Array.from(suppressedBeaconKeys),
+        });
       };
       const settleReject = (error: Error) => {
         if (settled) {
@@ -1218,9 +1348,9 @@ export class RenderEngine {
         reject(error);
       };
 
-      // Track when the underlying signal (network+DOM / app_signaled) first fired
-      // so we can log it, but metadata is the gate for actually resolving.
-      let signalReason: string | null = null;
+      // Track when the underlying signal first fired so we can log it, but
+      // metadata is the gate for actually resolving.
+      let signal: ReadySignal | null = null;
       let signalFiredAt: number | null = null;
 
       const tick = async () => {
@@ -1250,9 +1380,6 @@ export class RenderEngine {
         // Metadata is a first-class readiness requirement, not a post-check.
         const hasMetadata = await this.hasHeadMetadata({ page });
 
-        // ── Check underlying signals ──
-        let signalReady = signalReason !== null;
-
         // Record the app's readiness signal, but don't trust it on its own.
         // The app can set prerenderReady before its own data fetch resolves
         // (the skeleton race), so we still wait for first-party requests to go
@@ -1273,36 +1400,19 @@ export class RenderEngine {
           }
         }
 
-        if (!signalReady) {
-          // Two classes of tracked requests stop gating idle (but stay in
-          // the map for the pendingRequests diagnostic): beacon-classified
-          // endpoints (checked live, so a classification made by any
-          // concurrent pipeline applies here immediately), and requests
-          // pending longer than the age cap — long-polls, hung data calls,
-          // and requests orphaned by a redirect (see PENDING_MAX_AGE_MS).
-          const pendingMaxAgeMs =
-            PENDING_MAX_AGE_MS * this._stabilityMultiplier;
-          let activePending = 0;
-          for (const {
-            startedAt: reqStartedAt,
-            key,
-          } of firstPartyReqPending.values()) {
-            if (
-              key !== null &&
-              this._beaconDetector?.isBeaconKey(key) === true
-            ) {
-              suppressedBeaconKeys?.add(key);
-              continue;
-            }
-            // Age from the later of request start and readiness start:
-            // requests issued during a slow page.goto are already old by the
-            // first tick, and still deserve the full grace period.
-            const ageFrom = Math.max(reqStartedAt, startedAt);
-            if (now - ageFrom < pendingMaxAgeMs) {
-              activePending++;
-            }
+        if (signal === null) {
+          const active = countActivePending({
+            pending: firstPartyReqPending,
+            now,
+            readinessStartedAt: startedAt,
+            maxAgeMs: pendingMaxAgeMs,
+            isBeaconKey: (key) =>
+              this._beaconDetector?.isBeaconKey(key) === true,
+          });
+          for (const key of active.suppressedBeaconKeys) {
+            suppressedBeaconKeys.add(key);
           }
-          if (activePending === 0) {
+          if (active.count === 0) {
             if (state.networkIdleSince === null) {
               state.networkIdleSince = now;
               state.heartbeatAtNetworkIdle = await this.getHeartbeatTick({
@@ -1316,7 +1426,7 @@ export class RenderEngine {
 
           const lastDomChange = await this.getLastDomChange({ page });
           const domIdleTime = now - lastDomChange;
-          if (domIdleTime >= DOM_STABLE_MS) {
+          if (domIdleTime >= domStableMs) {
             if (state.domStableSince === null) {
               state.domStableSince = now;
             }
@@ -1329,7 +1439,7 @@ export class RenderEngine {
 
           const networkIdleDuration =
             state.networkIdleSince !== null ? now - state.networkIdleSince : 0;
-          let networkStable = networkIdleDuration >= NETWORK_QUIET_MS;
+          let networkStable = networkIdleDuration >= networkQuietMs;
           if (networkStable && state.heartbeatAtNetworkIdle !== null) {
             const heartbeat = await this.getHeartbeatTick({ page });
             if (
@@ -1343,43 +1453,21 @@ export class RenderEngine {
               networkStable = false;
             }
           }
-          const domStable = state.domStableSince !== null;
 
-          // Trust the app signal only once first-party requests have gone
-          // quiet — by then React has painted the content. DOM stability isn't
-          // required here because the app has explicitly declared readiness.
-          // A defined-but-false flag means the app is mid-load by its own
-          // account: the stability fallbacks below would capture its loading
-          // shell, so they stay disabled until the flag flips (or the hard
-          // timeout above fails the render).
-          const awaitingAppSignal = state.flagDefined && !state.appSignaled;
-
-          if (state.appSignaled && networkStable) {
-            signalReady = true;
-            signalReason = "app_signaled";
+          signal = evaluateReadySignal({
+            elapsed,
+            appSignaled: state.appSignaled,
+            flagDefined: state.flagDefined,
+            networkStable,
+            domStable: state.domStableSince !== null,
+            networkIdleMs: networkIdleDuration,
+            domIdleMs: domIdleTime,
+          });
+          if (signal) {
             signalFiredAt = now;
             this._logger.debug(
-              `[Prerender] App signaled and network idle for ${networkIdleDuration}ms`,
+              `[Prerender] Signal ${signal.reason}${signal.detail ? ` (${signal.detail})` : ""}`,
             );
-          } else if (!awaitingAppSignal && networkStable && domStable) {
-            signalReady = true;
-            signalReason = `network_and_dom_stable (network idle ${networkIdleDuration}ms, DOM stable ${domIdleTime}ms)`;
-            signalFiredAt = now;
-          }
-
-          const MIN_WAIT_MS = 500;
-          const DOM_EXTENDED_WAIT_MS = 3000;
-          if (
-            !signalReady &&
-            !awaitingAppSignal &&
-            elapsed >= MIN_WAIT_MS &&
-            networkStable
-          ) {
-            if (elapsed >= MIN_WAIT_MS + DOM_EXTENDED_WAIT_MS) {
-              signalReady = true;
-              signalReason = "network_stable_dom_timeout";
-              signalFiredAt = now;
-            }
           }
         }
 
@@ -1387,24 +1475,23 @@ export class RenderEngine {
         // Both metadata AND an underlying signal must be satisfied.
         // Metadata alone isn't enough (page might still be loading).
         // Signal alone isn't enough (title may not have been injected yet).
-        if (hasMetadata && signalReady) {
+        if (hasMetadata && signal) {
           // Wait a short settle period after both conditions are met so
           // remaining meta tags (description, og:*) finish injecting.
           const lastDomChange = await this.getLastDomChange({ page });
-          const domSettled = now - lastDomChange >= POST_READY_SETTLE_MS;
-          if (domSettled) {
-            this._logger.debug(`[Prerender] Page ready: ${signalReason}`);
-            return settleResolve(signalReason ?? "ready");
+          if (now - lastDomChange >= postReadySettleMs) {
+            this._logger.debug(`[Prerender] Page ready: ${signal.reason}`);
+            return settleResolve(signal.reason, signal.detail);
           }
         }
 
-        // Metadata present but no signal yet — keep waiting for signal
-        // Signal present but no metadata — keep polling for metadata
-        if (signalReady && !hasMetadata && signalFiredAt !== null) {
+        // Metadata present but no signal yet — keep waiting for signal.
+        // Signal present but no metadata — keep polling for metadata.
+        if (signal && !hasMetadata && signalFiredAt !== null) {
           // Log once when we start waiting for metadata
           if (now - signalFiredAt < POLL_INTERVAL_MS * 2) {
             this._logger.debug(
-              `[Prerender] Signal ready (${signalReason}) but head metadata missing, will keep polling until hard timeout`,
+              `[Prerender] Signal ready (${signal.reason}) but head metadata missing, will keep polling until hard timeout`,
             );
           }
         }

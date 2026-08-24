@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Browser, HTTPRequest, HTTPResponse, Page } from "puppeteer-core";
-import { isDegradedRender, RenderEngine } from "./render-engine";
+import {
+  countActivePending,
+  evaluateReadySignal,
+  isDegradedRender,
+  renderDiagnosticsToMetadata,
+  RenderEngine,
+  type ReadyOutcome,
+} from "./render-engine";
 import { BeaconDetector } from "./beacon-detector";
 
 type PendingEntry = { startedAt: number; key: string | null };
@@ -46,7 +53,7 @@ function makeEngine(opts?: {
 function waitForPageReady(
   engine: RenderEngine,
   firstPartyReqPending: Map<HTTPRequest, PendingEntry> = new Map(),
-): Promise<string> {
+): Promise<ReadyOutcome> {
   const fakePage = {
     evaluate: (fn: () => unknown) => Promise.resolve(fn()),
   } as unknown as Page;
@@ -55,14 +62,14 @@ function waitForPageReady(
       waitForPageReady(args: {
         page: Page;
         firstPartyReqPending: Map<HTTPRequest, PendingEntry>;
-        suppressedBeaconKeys?: Set<string>;
-      }): Promise<string>;
+      }): Promise<ReadyOutcome>;
     }
-  ).waitForPageReady({
-    page: fakePage,
-    firstPartyReqPending,
-    suppressedBeaconKeys: new Set(),
-  });
+  ).waitForPageReady({ page: fakePage, firstPartyReqPending });
+}
+
+/** The reason alone; most readiness tests only care about that. */
+async function readyReason(promise: Promise<ReadyOutcome>): Promise<string> {
+  return (await promise).reason;
 }
 
 describe("waitForPageReady readiness-flag contract", () => {
@@ -83,7 +90,7 @@ describe("waitForPageReady readiness-flag contract", () => {
 
     await vi.advanceTimersByTimeAsync(5_000);
 
-    await expect(ready).resolves.toMatch(/network_and_dom_stable/);
+    await expect(readyReason(ready)).resolves.toMatch(/network_and_dom_stable/);
   });
 
   it("resolves app_signaled when prerenderReady flips true before the hard timeout", async () => {
@@ -97,7 +104,7 @@ describe("waitForPageReady readiness-flag contract", () => {
     }, 10_000);
     await vi.advanceTimersByTimeAsync(15_000);
 
-    await expect(ready).resolves.toBe("app_signaled");
+    await expect(readyReason(ready)).resolves.toBe("app_signaled");
   });
 
   it("captures at hard timeout when prerenderReady stays false, with a distinct reason", async () => {
@@ -107,7 +114,7 @@ describe("waitForPageReady readiness-flag contract", () => {
 
     await vi.advanceTimersByTimeAsync(31_000);
 
-    await expect(ready).resolves.toBe("hard_timeout_not_ready");
+    await expect(readyReason(ready)).resolves.toBe("hard_timeout_not_ready");
   });
 
   it("stops letting a request gate idle once it pends past PENDING_MAX_AGE_MS", async () => {
@@ -126,7 +133,7 @@ describe("waitForPageReady readiness-flag contract", () => {
 
     await vi.advanceTimersByTimeAsync(15_000);
 
-    await expect(ready).resolves.toMatch(/network_and_dom_stable/);
+    await expect(readyReason(ready)).resolves.toMatch(/network_and_dom_stable/);
     // Still listed for the pendingRequests diagnostic.
     expect(pending.has(hungRequest)).toBe(true);
   });
@@ -150,7 +157,7 @@ describe("waitForPageReady readiness-flag contract", () => {
 
     await vi.advanceTimersByTimeAsync(31_000);
 
-    await expect(ready).resolves.toBe("hard_timeout");
+    await expect(readyReason(ready)).resolves.toBe("hard_timeout");
   });
 
   it("stops letting beacon-classified endpoints gate idle, across pipelines", async () => {
@@ -176,7 +183,7 @@ describe("waitForPageReady readiness-flag contract", () => {
 
     await vi.advanceTimersByTimeAsync(5_000);
 
-    await expect(ready).resolves.toMatch(/network_and_dom_stable/);
+    await expect(readyReason(ready)).resolves.toMatch(/network_and_dom_stable/);
     expect(pending.has(beaconReq)).toBe(true);
   });
 
@@ -197,7 +204,7 @@ describe("waitForPageReady readiness-flag contract", () => {
 
     await vi.advanceTimersByTimeAsync(15_000);
 
-    await expect(ready).resolves.toMatch(/network_and_dom_stable/);
+    await expect(readyReason(ready)).resolves.toMatch(/network_and_dom_stable/);
   });
 
   it("gives a request issued during a slow navigation its full grace period", async () => {
@@ -221,7 +228,7 @@ describe("waitForPageReady readiness-flag contract", () => {
     expect(settled).toBe(false);
 
     await vi.advanceTimersByTimeAsync(8_000);
-    await expect(ready).resolves.toMatch(/network_and_dom_stable/);
+    await expect(readyReason(ready)).resolves.toMatch(/network_and_dom_stable/);
   });
 
   it("still hard-times-out while a fresh tracked request keeps the network busy", async () => {
@@ -240,7 +247,7 @@ describe("waitForPageReady readiness-flag contract", () => {
     }
     await vi.advanceTimersByTimeAsync(31_000);
 
-    await expect(ready).resolves.toBe("hard_timeout");
+    await expect(readyReason(ready)).resolves.toBe("hard_timeout");
   });
 });
 
@@ -274,11 +281,22 @@ describe("throttled-request diagnostics", () => {
       pageErrors: [],
       throttledRequestCount: 0,
     };
+    const ctx = {
+      firstPartyReqPending: new Map(),
+      outgoingRequests: new Set(),
+      beaconSession: null,
+      readinessSignal: { domStableSince: null },
+      navigationCount: 0,
+    };
     (
       engine as unknown as {
-        attachDebugListeners(page: Page, d: typeof diagnostics): void;
+        attachResponseHandlers(
+          page: Page,
+          ctx: unknown,
+          d: typeof diagnostics,
+        ): void;
       }
-    ).attachDebugListeners(fakePage, diagnostics);
+    ).attachResponseHandlers(fakePage, ctx, diagnostics);
     for (const res of responses) {
       for (const h of handlers["response"] ?? []) h(res as never);
     }
@@ -342,7 +360,7 @@ describe("isDegradedRender", () => {
     ).toBe(false);
     expect(
       isDegradedRender({
-        readyReason: "network_and_dom_stable (network idle 800ms, DOM stable 600ms)",
+        readyReason: "network_and_dom_stable",
         throttledRequestCount: 0,
       }),
     ).toBe(false);
@@ -361,3 +379,164 @@ describe("isDegradedRender", () => {
   });
 });
 
+
+function pendingEntry(
+  url: string,
+  entry: Partial<PendingEntry> & { startedAt: number },
+): [HTTPRequest, PendingEntry] {
+  return [
+    { url: () => url } as unknown as HTTPRequest,
+    { key: null, ...entry },
+  ];
+}
+
+describe("countActivePending", () => {
+  const NOW = 1_000_000;
+  const base = {
+    now: NOW,
+    readinessStartedAt: NOW - 20_000,
+    maxAgeMs: 10_000,
+    isBeaconKey: () => false,
+  };
+
+  it("counts requests younger than the age cap and retires the rest", () => {
+    const pending = new Map([
+      pendingEntry("https://x.test/fresh", { startedAt: NOW - 1_000 }),
+      pendingEntry("https://x.test/hung", { startedAt: NOW - 30_000 }),
+    ]);
+    expect(countActivePending({ ...base, pending }).count).toBe(1);
+  });
+
+  it("skips beacon-classified endpoints and reports them", () => {
+    const pending = new Map([
+      pendingEntry("https://x.test/beacon", {
+        startedAt: NOW,
+        key: "x.test/beacon",
+      }),
+      pendingEntry("https://x.test/data", { startedAt: NOW }),
+    ]);
+    const result = countActivePending({
+      ...base,
+      pending,
+      isBeaconKey: (key) => key === "x.test/beacon",
+    });
+    expect(result.count).toBe(1);
+    expect(result.suppressedBeaconKeys).toEqual(["x.test/beacon"]);
+  });
+
+  it("ages from readiness start, so a slow navigation costs no grace period", () => {
+    // Issued 15s ago but readiness only began 1s ago: still within the cap.
+    const pending = new Map([
+      pendingEntry("https://x.test/bootstrap", { startedAt: NOW - 15_000 }),
+    ]);
+    expect(
+      countActivePending({ ...base, pending, readinessStartedAt: NOW - 1_000 })
+        .count,
+    ).toBe(1);
+  });
+});
+
+describe("evaluateReadySignal", () => {
+  const base = {
+    elapsed: 10_000,
+    appSignaled: false,
+    flagDefined: false,
+    networkStable: true,
+    domStable: true,
+    networkIdleMs: 800,
+    domIdleMs: 600,
+  };
+
+  it("prefers the app signal once the network is quiet", () => {
+    expect(evaluateReadySignal({ ...base, appSignaled: true })?.reason).toBe(
+      "app_signaled",
+    );
+    expect(
+      evaluateReadySignal({
+        ...base,
+        appSignaled: true,
+        networkStable: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("holds every heuristic capture while a defined flag has not flipped", () => {
+    expect(evaluateReadySignal({ ...base, flagDefined: true })).toBeNull();
+    expect(
+      evaluateReadySignal({
+        ...base,
+        flagDefined: true,
+        domStable: false,
+        elapsed: 25_000,
+      }),
+    ).toBeNull();
+  });
+
+  it("captures on network+DOM stability, with the measurements attached", () => {
+    const signal = evaluateReadySignal(base);
+    expect(signal?.reason).toBe("network_and_dom_stable");
+    expect(signal?.detail).toBe("network idle 800ms, DOM stable 600ms");
+  });
+
+  it("falls back to a DOM timeout only after the extended wait", () => {
+    const unstableDom = { ...base, domStable: false };
+    expect(evaluateReadySignal({ ...unstableDom, elapsed: 2_000 })).toBeNull();
+    expect(
+      evaluateReadySignal({ ...unstableDom, elapsed: 4_000 })?.reason,
+    ).toBe("network_stable_dom_timeout");
+  });
+
+  it("keeps waiting while the network is busy", () => {
+    expect(
+      evaluateReadySignal({ ...base, networkStable: false, elapsed: 25_000 }),
+    ).toBeNull();
+  });
+});
+
+describe("renderDiagnosticsToMetadata", () => {
+  const base = {
+    readyReason: "network_and_dom_stable" as const,
+    readyDetail: "network idle 800ms",
+    durationMs: 4200,
+    failedRequests: [],
+    pendingRequests: [],
+    consoleErrors: [],
+    pageErrors: [],
+    throttledRequestCount: 0,
+    beaconEndpoints: [],
+  };
+
+  it("emits a count beside every list, and keeps R2's 8KB metadata budget", () => {
+    const meta = renderDiagnosticsToMetadata({
+      ...base,
+      pendingRequests: Array.from({ length: 50 }, (_, i) => `https://x.test/${i}`),
+      consoleErrors: Array.from({ length: 50 }, () => "e".repeat(300)),
+      beaconEndpoints: ["x.test/collect"],
+    });
+    // Counts report the full list even when the stored array was trimmed.
+    expect(meta.renderPendingRequestCount).toBe("50");
+    expect(meta.renderConsoleErrorCount).toBe("50");
+    const storedErrors = JSON.parse(
+      meta.renderConsoleErrors ?? "[]",
+    ) as string[];
+    expect(storedErrors.length).toBeLessThan(50);
+    expect(meta.renderBeaconEndpoints).toBe('["x.test/collect"]');
+    const bytes = Object.entries(meta).reduce(
+      (n, [k, v]) => n + k.length + v.length,
+      0,
+    );
+    expect(bytes).toBeLessThan(8192);
+  });
+
+  it("escapes non-ASCII so values stay valid HTTP header text", () => {
+    const meta = renderDiagnosticsToMetadata({
+      ...base,
+      consoleErrors: ["emoji 🎉 and curly ’quotes’"],
+    });
+    // The stored value is pure ASCII, and parses back to the original text.
+    expect(meta.renderConsoleErrors).not.toMatch(/[^\x20-\x7E]/);
+    expect(meta.renderConsoleErrors).toContain("\\ud83c");
+    const decoded = JSON.parse(meta.renderConsoleErrors ?? "[]") as string[];
+    expect(decoded[0]).toBe("emoji 🎉 and curly ’quotes’");
+  });
+});
