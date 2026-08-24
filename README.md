@@ -75,6 +75,7 @@ cp .env.sample .env.local
 | `TELEGRAM_CHAT_ID`       | no       | —                        | Telegram chat ID to send notifications to; Telegram is skipped if unset                                                         |
 | `OUTPUT_DIR`             | no       | —                        | When set, each run writes its HTML snapshots and a `summary.json` into a timestamped subdirectory (local testing aid)           |
 | `DISABLE_ASSET_CACHE`    | no       | `false`                  | Set to `true` to disable the job-wide asset cache (every render fetches all assets from origin; for A/B measurement)            |
+| `DISABLE_BEACON_DETECTOR` | no      | `false`                  | Set to `true` to disable behavioral beacon classification (readiness gating falls back to the static ignore lists alone)        |
 
 ### 2. Run via Docker
 

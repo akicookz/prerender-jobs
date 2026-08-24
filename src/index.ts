@@ -7,6 +7,7 @@ import * as TelegramBot from "node-telegram-bot-api";
 import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
 import { AssetCache } from "./asset-cache";
+import { BeaconDetector } from "./beacon-detector";
 import { BrowserPool } from "./browser-pool";
 import { stripTrackingParams } from "./cache-manager/kv-key-utils";
 import { R2Loader } from "./cache-manager/r2-loader";
@@ -26,6 +27,7 @@ import { AppLogger, INDENT } from "./logger";
 import {
   isDegradedRender,
   RenderEngine,
+  type ReadyReason,
   type RenderResult,
 } from "./render-engine";
 import { RequestStats } from "./request-stats";
@@ -52,7 +54,7 @@ interface PipelineResult {
   /** Wall-clock of the successful render attempt, from RenderDiagnostics. */
   renderDurationMs?: number;
   /** What ended the readiness wait, from RenderDiagnostics. */
-  readyReason?: string;
+  readyReason?: ReadyReason;
   /** 429s on data calls during the render, from RenderDiagnostics. */
   throttledRequestCount?: number;
   /** Why the path failed — unset on success. */
@@ -245,11 +247,11 @@ async function reportResult({
   let degradedPathCount = 0;
   for (const r of urlResultMap.values()) {
     if (!r.isRendered) continue;
-    const reason = (r.readyReason ?? "").split(" ")[0] || "unknown";
+    const reason: string = r.readyReason ?? "unknown";
     readyReasons[reason] = (readyReasons[reason] ?? 0) + 1;
     if (
       isDegradedRender({
-        readyReason: r.readyReason ?? "",
+        readyReason: r.readyReason,
         throttledRequestCount: r.throttledRequestCount ?? 0,
       })
     ) {
@@ -452,6 +454,7 @@ async function runPipeline({
   browser,
   assetCache,
   requestStats,
+  beaconDetector,
   snapshotDir,
 }: {
   pipelineNumber: number;
@@ -461,6 +464,7 @@ async function runPipeline({
   browser: Browser;
   assetCache: AssetCache | null;
   requestStats: RequestStats;
+  beaconDetector: BeaconDetector | null;
   snapshotDir: string | null;
 }): Promise<PipelineResult> {
   const path = extractPathFromUrl(urlToRender);
@@ -500,6 +504,7 @@ async function runPipeline({
       extendedStability: attempt > 1,
       assetCache: assetCache ?? undefined,
       requestStats,
+      beaconDetector: beaconDetector ?? undefined,
     });
 
     try {
@@ -682,12 +687,14 @@ async function reportRunSummary({
   pipelineResults,
   requestStats,
   assetCache,
+  beaconDetector,
   snapshotDir,
   concurrency,
 }: {
   pipelineResults: PipelineResult[];
   requestStats: RequestStats;
   assetCache: AssetCache | null;
+  beaconDetector: BeaconDetector | null;
   snapshotDir: string | null;
   concurrency: number;
 }): Promise<void> {
@@ -705,6 +712,13 @@ async function reportRunSummary({
     `[Summary] Outbound requests: ${reqStats.originRequests} to customer origin, ` +
       `${reqStats.thirdPartyRequests} to third parties`,
   );
+
+  const beaconEndpoints = beaconDetector?.classifiedEndpoints() ?? [];
+  if (beaconEndpoints.length > 0) {
+    logger.info(
+      `[BeaconDetector] ${beaconEndpoints.length} beacon endpoint(s) classified this job: ${beaconEndpoints.join(", ")}`,
+    );
+  }
 
   const cacheStats = assetCache ? assetCache.stats() : null;
   const cacheableTotal = cacheStats ? cacheStats.hits + cacheStats.misses : 0;
@@ -790,6 +804,15 @@ async function runPipelineStreams({
     logger.info(`[AssetCache] Disabled via DISABLE_ASSET_CACHE`);
   }
   const requestStats = RequestStats.register();
+  // One beacon detector for the whole job: every render is the same site, so
+  // a verdict reached in one render stops that endpoint gating readiness in
+  // all later ones. Hit counts are per-render (see BeaconRenderSession).
+  const beaconDetector = config.disableBeaconDetector
+    ? null
+    : BeaconDetector.register();
+  if (!beaconDetector) {
+    logger.info(`[BeaconDetector] Disabled via DISABLE_BEACON_DETECTOR`);
+  }
 
   let snapshotDir: string | null = null;
   if (config.outputDir) {
@@ -869,6 +892,7 @@ async function runPipelineStreams({
             browser,
             assetCache,
             requestStats,
+            beaconDetector,
             snapshotDir,
           }),
         );
@@ -896,6 +920,7 @@ async function runPipelineStreams({
       pipelineResults,
       requestStats,
       assetCache,
+      beaconDetector,
       snapshotDir,
       concurrency,
     });
