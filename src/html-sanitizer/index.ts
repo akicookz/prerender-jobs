@@ -53,6 +53,7 @@ export function sanitizeHtml({
   html,
   url,
   canonicalDomain,
+  controls,
 }: SanitizeOptions): string {
   const root = parse(html, { comment: true });
 
@@ -136,7 +137,9 @@ export function sanitizeHtml({
   // -------------------------------------------------------------------------
   // R8 + R11: Remove all <style> elements (head + body)
   // -------------------------------------------------------------------------
-  removeStyleElements(root);
+  if (controls.stripStyleBlocks) {
+    removeStyleElements(root);
+  }
 
   // -------------------------------------------------------------------------
   // R9: Remove browser performance hint links
@@ -161,12 +164,16 @@ export function sanitizeHtml({
   // -------------------------------------------------------------------------
   // R12: Remove inline style attributes
   // -------------------------------------------------------------------------
-  removeAttributes(root, "style");
+  if (controls.stripStyleAttrs) {
+    removeAttributes(root, "style");
+  }
 
   // -------------------------------------------------------------------------
   // R13: Remove class attributes
   // -------------------------------------------------------------------------
-  removeAttributes(root, "class");
+  if (controls.stripClassAttrs) {
+    removeAttributes(root, "class");
+  }
 
   // -------------------------------------------------------------------------
   // R14: Remove data-* attributes (except data-rh)

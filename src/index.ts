@@ -534,6 +534,7 @@ async function runPipeline({
         html: preparedHtml,
         url: renderResult.finalUrl,
         canonicalDomain: config.canonicalDomain,
+        controls: config.snapshotControls,
       });
       // logger.debug(`Sanitized HTML: ${sanitizedHtml}`);
     } catch (e) {

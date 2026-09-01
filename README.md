@@ -58,6 +58,7 @@ cp .env.sample .env.local
 | `R2_ACCESS_KEY_ID`       | yes      | —                        | R2 S3-compatible access key                                                                                                     |
 | `R2_SECRET_ACCESS_KEY`   | yes      | —                        | R2 S3-compatible secret key                                                                                                     |
 | `R2_BUCKET_NAME`         | yes      | —                        | Target R2 bucket name                                                                                                           |
+| `SNAPSHOT_CONTROLS`      | yes      | —                        | Fully resolved snapshot strip controls JSON, e.g. `{"stripClassAttrs":true,"stripStyleAttrs":true,"stripStyleBlocks":true}`     |
 | `RETRY_OPTIONS`          | no       | —                        | JSON string forwarded as `retry_options` in the webhook for downstream retry handling                                           |
 | `SITEMAP_URL`            | no       | `<hostname>/sitemap.xml` | Explicit sitemap URL                                                                                                            |
 | `SITEMAP_UPDATED_WITHIN` | no       | `all`                    | Filter sitemap URLs by lastmod: `1d`, `3d`, `7d`, `30d`, `all`                                                                  |

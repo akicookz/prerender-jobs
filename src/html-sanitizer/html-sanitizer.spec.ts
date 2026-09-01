@@ -25,15 +25,26 @@ function doc({
   return `<!DOCTYPE html><html${htmlAttrs ? " " + htmlAttrs : ""}><head>${head}</head><body>${body}</body></html>`;
 }
 
+const STRIP_ALL = {
+  stripClassAttrs: true,
+  stripStyleAttrs: true,
+  stripStyleBlocks: true,
+};
+
 /** Shorthand to sanitize with defaults */
 function sanitize(
   html: string,
   {
     url = BASE_URL,
     canonicalDomain = CANONICAL_DOMAIN,
-  }: { url?: string; canonicalDomain?: string } = {},
+    controls = STRIP_ALL,
+  }: {
+    url?: string;
+    canonicalDomain?: string;
+    controls?: typeof STRIP_ALL;
+  } = {},
 ): string {
-  return sanitizeHtml({ html, url, canonicalDomain });
+  return sanitizeHtml({ html, url, canonicalDomain, controls });
 }
 
 /** Generate body with approximately n words */
@@ -1941,5 +1952,49 @@ describe("data URL preprocessing integrates with sanitizeHtml", () => {
     expect(html.length).toBeGreaterThan(5_000_000);
     expect(prepared.length).toBeLessThan(1_000);
     expect(urlMap.size).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Snapshot controls
+// ---------------------------------------------------------------------------
+
+describe("snapshot controls", () => {
+  const input = doc({
+    body: '<style>.a{color:red}</style><div class="a" style="margin:0" id="keep">hello</div>',
+  });
+
+  it("strips class, style attrs and style blocks with all strips on", () => {
+    const out = sanitize(input);
+    expect(out).not.toContain("class=");
+    expect(out).not.toContain('style="');
+    expect(out).not.toContain("<style");
+    expect(out).toContain('id="keep"');
+  });
+
+  it("preserves class and inline style when told to", () => {
+    const out = sanitize(input, {
+      controls: {
+        stripClassAttrs: false,
+        stripStyleAttrs: false,
+        stripStyleBlocks: true,
+      },
+    });
+    expect(out).toContain('class="a"');
+    expect(out).toContain('style="margin:0"');
+    expect(out).not.toContain("<style");
+  });
+
+  it("preserves style blocks when told to", () => {
+    const out = sanitize(input, {
+      controls: {
+        stripClassAttrs: true,
+        stripStyleAttrs: true,
+        stripStyleBlocks: false,
+      },
+    });
+    expect(out).toContain("<style");
+    // js-beautify reformats the kept CSS, so match structure, not spacing
+    expect(out).toMatch(/\.a\s*\{\s*color:\s*red/);
   });
 });

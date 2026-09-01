@@ -1,4 +1,5 @@
 import { isMemberOfEnum, normalizeTokenHost } from "./util";
+import type { SanitizeStripControls } from "./html-sanitizer/type";
 import { AppLogger } from "./logger";
 
 export type RenderTokenHostsParse =
@@ -50,6 +51,7 @@ enum ConfigEnvVariables {
   R2_ACCESS_KEY_ID = "R2_ACCESS_KEY_ID",
   R2_SECRET_ACCESS_KEY = "R2_SECRET_ACCESS_KEY",
   R2_BUCKET_NAME = "R2_BUCKET_NAME",
+  SNAPSHOT_CONTROLS = "SNAPSHOT_CONTROLS",
 
   // OPTIONAL
   CONCURRENCY = "CONCURRENCY",
@@ -111,6 +113,8 @@ export interface Configuration {
   r2BucketName: string;
   // User agent
   userAgent: string;
+  // Fully resolved snapshot strip controls from SNAPSHOT_CONTROLS
+  snapshotControls: SanitizeStripControls;
   // Concurrency
   concurrency: number;
   // Whether to skip cache sync
@@ -138,6 +142,36 @@ export interface Configuration {
   disableBeaconDetector: boolean;
 }
 
+function parseSnapshotControls(raw: string | undefined): SanitizeStripControls {
+  if (!raw) {
+    throw new Error("SNAPSHOT_CONTROLS is required and missing");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("SNAPSHOT_CONTROLS is not valid JSON");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("SNAPSHOT_CONTROLS must be a JSON object");
+  }
+  const o = parsed as Record<string, unknown>;
+  for (const key of [
+    "stripClassAttrs",
+    "stripStyleAttrs",
+    "stripStyleBlocks",
+  ] as const) {
+    if (typeof o[key] !== "boolean") {
+      throw new Error(`SNAPSHOT_CONTROLS.${key} must be a boolean`);
+    }
+  }
+  return {
+    stripClassAttrs: o.stripClassAttrs as boolean,
+    stripStyleAttrs: o.stripStyleAttrs as boolean,
+    stripStyleBlocks: o.stripStyleBlocks as boolean,
+  };
+}
+
 function requireEnv(name: ConfigEnvVariables): string {
   const value = process.env[name];
   if (!value) {
@@ -156,6 +190,9 @@ export function loadConfig(): Configuration {
   const userId = requireEnv(ConfigEnvVariables.USER_ID);
   const requestSource = requireEnv(ConfigEnvVariables.REQUEST_SOURCE);
   const domain = requireEnv(ConfigEnvVariables.DOMAIN);
+  const snapshotControls = parseSnapshotControls(
+    process.env[ConfigEnvVariables.SNAPSHOT_CONTROLS],
+  );
 
   // Canonical domain is optional; falls back to DOMAIN if not set
   const canonicalDomain =
@@ -288,6 +325,7 @@ export function loadConfig(): Configuration {
     userId,
     requestSource,
     domain,
+    snapshotControls,
     urlBase,
     canonicalDomain,
     baseUrl,
