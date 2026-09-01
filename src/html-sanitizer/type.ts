@@ -5,4 +5,12 @@ export interface SanitizeOptions {
   url: string;
   /** The preferred canonical domain hostname (e.g. "example.com" or "www.example.com") */
   canonicalDomain: string;
+  /** Fully resolved strip controls from SNAPSHOT_CONTROLS */
+  controls: SanitizeStripControls;
+}
+
+export interface SanitizeStripControls {
+  stripClassAttrs: boolean;
+  stripStyleAttrs: boolean;
+  stripStyleBlocks: boolean;
 }
