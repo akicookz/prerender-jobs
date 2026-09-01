@@ -4,12 +4,14 @@ import { uniq } from "es-toolkit";
 import { backOff } from "exponential-backoff";
 import { DateTime } from "luxon";
 import * as TelegramBot from "node-telegram-bot-api";
-import normalizeUrl from "normalize-url";
 import puppeteer, { Browser } from "puppeteer-core";
 import { AssetCache } from "./asset-cache";
 import { BeaconDetector } from "./beacon-detector";
 import { BrowserPool } from "./browser-pool";
-import { stripTrackingParams } from "./cache-manager/kv-key-utils";
+import {
+  canonicalizeSnapshotUrl,
+  stripTrackingParams,
+} from "./cache-manager/kv-key-utils";
 import { R2Loader } from "./cache-manager/r2-loader";
 import {
   sanitizeHtml,
@@ -163,7 +165,7 @@ async function prepareTargetUrls({
   // one render and one cache entry instead of each minting their own.
   const urlsToRender = uniq(
     [...urlsFromPaths, ...urlsFromSitemap].map((url) =>
-      stripTrackingParams(normalizeUrl(url)),
+      stripTrackingParams(canonicalizeSnapshotUrl(url)),
     ),
   );
   logger.info(`Prepared ${urlsToRender.length} URLs to render`);
@@ -944,18 +946,15 @@ async function main(): Promise<void> {
   const cacheTtlMap = new Map<string, number>();
   const urlToOriginalPathMap = new Map<string, string>();
   const urlsFromPaths = config.pathsList.map((entry) => {
+    // Must produce the same string prepareTargetUrls does, or the TTL and
+    // original-path lookups below miss and every page silently falls back to
+    // the default TTL.
     const url = stripTrackingParams(
-      normalizeUrl(`${config.baseUrl}${entry.path}`),
+      canonicalizeSnapshotUrl(`${config.baseUrl}${entry.path}`),
     );
-    let encodedUrl: string;
-    try {
-      encodedUrl = encodeURI(decodeURI(url));
-    } catch {
-      encodedUrl = url;
-    }
-    cacheTtlMap.set(encodedUrl, entry.ttl);
-    urlToOriginalPathMap.set(encodedUrl, entry.path);
-    return encodedUrl;
+    cacheTtlMap.set(url, entry.ttl);
+    urlToOriginalPathMap.set(url, entry.path);
+    return url;
   });
 
   let urlsToRender: string[];

@@ -96,25 +96,35 @@ function canonicalizePathForKey({ url }: { url: URL }): string {
 }
 
 /**
+ * Canonical form for a render target and the key derived from it: WHATWG
+ * parsing plus the trailing slash, and nothing else.
+ *
+ * Never percent-decode here. URL prep used to run `normalize-url`, which
+ * decodes escaped unreserved characters (%2D, %2E, %41, %7E) plus %25, %5B,
+ * %5D and %7C. The worker keys on the raw pathname, so a decoded path stored
+ * a snapshot none of its readers could find. The worker mirrors this in
+ * prerender-utils normalizeRenderTargets — keep in sync.
+ */
+export function canonicalizeSnapshotUrl(rawTargetUrl: string): string {
+  let u: URL;
+  try {
+    u = new URL(rawTargetUrl);
+  } catch {
+    return rawTargetUrl;
+  }
+  if (u.pathname.length > 1 && u.pathname.endsWith("/")) {
+    u.pathname = u.pathname.slice(0, -1);
+  }
+  return u.toString();
+}
+
+/**
  * Single source for snapshot object-key derivation: hash of the canonical
  * KV-key string. The lovablehtml worker mirrors this in
  * worker/lib/prerender/prerender.ts deriveSnapshotObjectKey — keep in sync.
  * The host is normalized like buildKvKey's domain segment so www-preferred
  * domains land on the same key the worker derives.
  */
-function stripTrailingSlash(targetUrl: string): string {
-  try {
-    const u = new URL(targetUrl);
-    if (u.pathname.length > 1 && u.pathname.endsWith("/")) {
-      u.pathname = u.pathname.slice(0, -1);
-      return u.toString();
-    }
-    return targetUrl;
-  } catch {
-    return targetUrl;
-  }
-}
-
 export async function buildSnapshotObjectKey({
   targetUrl: rawTargetUrl,
 }: {
@@ -122,7 +132,7 @@ export async function buildSnapshotObjectKey({
 }): Promise<string> {
   // Trailing-slash variants must collapse to one object even when a writer
   // receives the un-normalized form (e.g. a redirect-followed final URL).
-  const targetUrl = stripTrailingSlash(rawTargetUrl);
+  const targetUrl = canonicalizeSnapshotUrl(rawTargetUrl);
   const url = new URL(targetUrl);
   const safeHost = normalizeDomain({ domain: url.hostname }).replace(
     /[^a-z0-9.-]/g,
