@@ -27,6 +27,25 @@ const FIXTURES: Array<[string, string]> = [
   // one-sided change to the collapse regex fails here instead of silently
   // de-syncing the two repos' keys.
   ["https://example.com/a//b//c", "v1/example.com/a_b_c_93ed12a59c020adf.html"],
+  // Percent-escapes survive verbatim. URL prep used to run `normalize-url`,
+  // which decodes escaped unreserved characters (%2D, %2E, %41, %7E) plus
+  // %25, %5B, %5D and %7C, so the job stored keys the worker never derives.
+  [
+    "https://example.com/users/The%20Goddess%20Avery",
+    "v1/example.com/users_The-20Goddess-20Avery_5dab25688e177fc9.html",
+  ],
+  [
+    "https://example.com/users/50%25-off",
+    "v1/example.com/users_50-25-off_ad0d050220b627ff.html",
+  ],
+  [
+    "https://example.com/users/a%2Db",
+    "v1/example.com/users_a-2Db_e726f5aa8e905d7c.html",
+  ],
+  [
+    "https://example.com/users/a%7Eb",
+    "v1/example.com/users_a-7Eb_e0fc70666f2bf922.html",
+  ],
 ];
 
 describe("snapshot object key parity with lovablehtml worker", () => {
